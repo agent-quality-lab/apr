@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from review_schema import (  # noqa: E402
+    JOB_TYPES,
     ValidationError,
     check_keys,
     parse_json_strict,
@@ -320,6 +321,21 @@ def identity_proof(credential, nonce):
                     hashlib.sha256).hexdigest()
 
 
+def _constant_time_equal(a, b):
+    """Constant-time string equality that never raises on untrusted input.
+
+    hmac.compare_digest(str, str) raises TypeError for non-ASCII text, so
+    untrusted values are compared as UTF-8 bytes: any mismatch (including
+    non-ASCII) simply returns False instead of crashing the caller.
+    """
+    try:
+        if not isinstance(a, str) or not isinstance(b, str):
+            return False
+        return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+    except (TypeError, ValueError):
+        return False
+
+
 def _port_for(base_url):
     validate_base_url(base_url)
     return int(base_url.rsplit(":", 1)[1])
@@ -418,7 +434,7 @@ def http_call(base_url, path, credential=None, payload=None, timeout=10,
             raise ConnectionError(
                 f"service identity check failed at {base_url}: nonce mismatch")
         presented = proof_doc.get("proof")
-        if not isinstance(presented, str) or not hmac.compare_digest(
+        if not _constant_time_equal(
                 presented, identity_proof(credential, nonce)):
             raise ConnectionError(
                 f"service identity check failed at {base_url}: bad proof")
@@ -499,7 +515,7 @@ class ServiceHandler(http.server.BaseHTTPRequestHandler):
     def bearer_ok(self):
         presented = self.headers.get("Authorization") or ""
         expected = "Bearer " + self.server.credential
-        return hmac.compare_digest(presented, expected)
+        return _constant_time_equal(presented, expected)
 
     def send_bytes(self, status, content_type, body):
         self.send_response(status)
@@ -672,7 +688,14 @@ class ServiceHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(200, self._internal_record(args))
             elif name == "summary":
                 check_keys(args, "arguments", ["job_type"])
-                self.send_json(200, self.server.store.summary(args.get("job_type")))
+                job_type = args.get("job_type")
+                if job_type is not None and (
+                        not isinstance(job_type, str)
+                        or job_type not in JOB_TYPES):
+                    raise ValidationError(
+                        "job_type must be one of:"
+                        f" {', '.join(JOB_TYPES)}")
+                self.send_json(200, self.server.store.summary(job_type))
             elif name == "shutdown":
                 self.send_json(200, {"ok": True})
                 threading.Thread(target=self.server.shutdown,

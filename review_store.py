@@ -5,16 +5,19 @@ Standard library only. Depends on review_schema for validation (no cycles:
 review_schema imports nothing local). Sensitive files are never symlinks and
 stay mode 0600 inside a mode 0700 directory.
 """
+import errno
+import fcntl
 import hashlib
 import json
 import os
 import secrets
 import sqlite3
+import stat
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from review_schema import ValidationError, validate_review
+from review_schema import JOB_TYPES, ValidationError, validate_review
 
 SCOPE = "local-only: this machine's review database; not community or benchmark data"
 
@@ -129,6 +132,121 @@ def secure_existing_private(path, label="sensitive file"):
         raise StoreError(f"cannot secure {label} {path}: {exc}") from exc
 
 
+#: Per-data-directory advisory lock serializing store bootstrap (pre-open
+#: sidefile checks, SQLite connect/mode setup, migrations, file securing)
+#: and close (checkpoint, close, sidefile securing) across processes and
+#: threads. Held only at those boundaries, never for normal operations.
+#: Owner-only regular file; symlinks are refused, never followed.
+INIT_LOCK_NAME = "init.lock"
+
+
+def _init_lock_path(data_dir):
+    return os.path.join(str(data_dir), INIT_LOCK_NAME)
+
+
+def _acquire_init_lock(data_dir):
+    """Create the owner-only init lock and take an exclusive flock.
+
+    Returns the open fd; the caller must pass it to _release_init_lock.
+    Raises StoreError on symlinks, non-regular files, or lock failures.
+    """
+    path = _init_lock_path(data_dir)
+    if os.path.islink(path):
+        raise StoreError(f"refusing symlinked init lock: {path}")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | nofollow, 0o600)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP or os.path.islink(path):
+            raise StoreError(
+                f"refusing symlinked init lock: {path}") from exc
+        raise StoreError(f"cannot open init lock {path}: {exc}") from exc
+    try:
+        try:
+            mode = os.fstat(fd).st_mode
+        except OSError as exc:
+            raise StoreError(
+                f"cannot inspect init lock {path}: {exc}") from exc
+        if not stat.S_ISREG(mode):
+            raise StoreError(f"init lock is not a regular file: {path}")
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError as exc:
+            raise StoreError(
+                f"cannot secure init lock {path}: {exc}") from exc
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError as exc:
+            raise StoreError(
+                f"cannot serialize store initialization: {exc}") from exc
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    return fd
+
+
+def _release_init_lock(fd):
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _secure_db_candidate(candidate):
+    """Enforce 0600 on one existing database sidecar without following links.
+
+    A candidate that disappears between the existence check and securing
+    (SQLite checkpoint/commit cleanup racing a concurrent bootstrap) is a
+    legitimate absence, not an error. Permission failures still raise
+    StoreError, and symlinks/non-regular files are always refused.
+    """
+    if os.path.islink(candidate):
+        raise StoreError(
+            f"refusing symlinked database file: {candidate}")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(candidate, os.O_RDWR | nofollow)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        if exc.errno == errno.ELOOP or os.path.islink(candidate):
+            raise StoreError(
+                f"refusing symlinked database file: {candidate}") from exc
+        if os.path.lexists(candidate) and not os.path.isfile(candidate):
+            raise StoreError(
+                f"database path is not a regular file: {candidate}") from exc
+        raise StoreError(
+            f"cannot secure database file {candidate}: {exc}") from exc
+    try:
+        try:
+            is_regular = stat.S_ISREG(os.fstat(fd).st_mode)
+        except OSError as exc:
+            raise StoreError(
+                f"cannot secure database file {candidate}: {exc}") from exc
+        if not is_regular:
+            raise StoreError(
+                f"database path is not a regular file: {candidate}")
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError as exc:
+            raise StoreError(
+                f"cannot secure database file {candidate}: {exc}") from exc
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
 def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -141,27 +259,69 @@ class ReviewStore:
         self.data_dir = Path(data_dir)
         self.db_path = str(self.data_dir / "reviews.db")
         self._lock = threading.Lock()
+        self._conn = None
         ensure_private_dir(self.data_dir)
-        # Fail closed BEFORE any SQLite open: connecting first would let
-        # SQLite read or create files through a symlinked target, and would
-        # apply PRAGMAs/migrations before the sensitive-file check runs.
-        self._check_db_files_preopen()
-        new_db = not os.path.exists(self.db_path)
-        self._conn = sqlite3.connect(self.db_path, check_same_thread=False,
-                                     isolation_level=None, timeout=10.0)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=10000")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.row_factory = sqlite3.Row
-        if new_db:
-            try:
-                os.chmod(self.db_path, 0o600)
-            except OSError as exc:
-                self._conn.close()
+        # Serialize the whole bootstrap across processes and threads: the
+        # pre-open sidefile checks, SQLite connect/mode setup, migrations,
+        # and file securing must not interleave with another cold open or
+        # a concurrent close. The lock is held only here (and briefly in
+        # close), never for normal long-lived operations. Lock order is
+        # always init-lock outer, per-instance lock inner.
+        lock_fd = _acquire_init_lock(self.data_dir)
+        try:
+            if os.path.islink(self.data_dir):
                 raise StoreError(
-                    f"cannot secure new database {self.db_path}: {exc}") from exc
-        self.apply_migrations()
-        self._secure_db_files()
+                    f"refusing symlinked data directory: {self.data_dir}")
+            # Fail closed BEFORE any SQLite open: connecting first would let
+            # SQLite read or create files through a symlinked target, and
+            # would apply PRAGMAs/migrations before the file check runs.
+            self._check_db_files_preopen()
+            new_db = not os.path.exists(self.db_path)
+            try:
+                self._conn = sqlite3.connect(
+                    self.db_path, check_same_thread=False,
+                    isolation_level=None, timeout=10.0)
+            except sqlite3.Error as exc:
+                raise StoreError(
+                    f"cannot open database {self.db_path}: {exc}") from exc
+            try:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA busy_timeout=10000")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
+            except sqlite3.Error as exc:
+                try:
+                    self._conn.close()
+                except sqlite3.Error:
+                    pass
+                self._conn = None
+                raise StoreError(
+                    f"cannot initialize database {self.db_path}: {exc}"
+                ) from exc
+            self._conn.row_factory = sqlite3.Row
+            if new_db:
+                try:
+                    os.chmod(self.db_path, 0o600)
+                except OSError as exc:
+                    try:
+                        self._conn.close()
+                    except sqlite3.Error:
+                        pass
+                    self._conn = None
+                    raise StoreError(
+                        f"cannot secure new database {self.db_path}: {exc}"
+                    ) from exc
+            try:
+                self.apply_migrations()
+            except Exception:
+                try:
+                    self._conn.close()
+                except sqlite3.Error:
+                    pass
+                self._conn = None
+                raise
+            self._secure_db_files()
+        finally:
+            _release_init_lock(lock_fd)
 
     def _check_db_files_preopen(self):
         """Validate every existing database sidecar before SQLite opens any.
@@ -170,50 +330,51 @@ class ReviewStore:
         already exists, so no SQLite call ever touches an unsafe target.
         Only exact-path `islink` checks are used: a data directory that
         merely lives under an aliased parent (e.g. macOS /tmp) is unaffected.
+        A sidecar that vanishes between the check and securing (SQLite
+        cleanup racing a concurrent bootstrap) is a legitimate absence.
         """
         for suffix in self.DB_SUFFIXES:
-            candidate = self.db_path + suffix
-            if os.path.islink(candidate):
-                raise StoreError(
-                    f"refusing symlinked database file: {candidate}")
-            if os.path.lexists(candidate) and not os.path.isfile(candidate):
-                raise StoreError(
-                    f"database path is not a regular file: {candidate}")
-            if os.path.isfile(candidate):
-                try:
-                    os.chmod(candidate, 0o600)
-                except OSError as exc:
-                    raise StoreError(
-                        f"cannot secure database file {candidate}: {exc}"
-                    ) from exc
+            _secure_db_candidate(self.db_path + suffix)
 
     @classmethod
     def open(cls, data_dir=None):
         return cls(resolve_data_dir(data_dir))
 
     def _secure_db_files(self):
-        for suffix in ("", "-wal", "-shm", "-journal"):
-            candidate = self.db_path + suffix
-            if os.path.islink(candidate):
-                raise StoreError(
-                    f"refusing symlinked database file: {candidate}")
-            try:
-                if os.path.isfile(candidate):
-                    os.chmod(candidate, 0o600)
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                raise StoreError(
-                    f"cannot secure database file {candidate}: {exc}") from exc
+        for suffix in self.DB_SUFFIXES:
+            _secure_db_candidate(self.db_path + suffix)
 
     def close(self):
-        with self._lock:
-            try:
-                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except sqlite3.Error:
-                pass
-            self._conn.close()
-            self._secure_db_files()
+        # Coordinate with concurrent bootstraps: checkpoint, connection
+        # close, and sidefile securing run under the same per-directory
+        # init lock taken outer, per-instance lock inner (the same order
+        # as __init__), so a racing cold open cannot observe a
+        # half-checkpointed store. Normal operations never take this lock.
+        # If the directory or lock is gone, still close the connection
+        # rather than leaking it behind a lock error.
+        try:
+            lock_fd = _acquire_init_lock(self.data_dir)
+        except StoreError:
+            lock_fd = None
+        try:
+            with self._lock:
+                if self._conn is None:
+                    if lock_fd is not None:
+                        self._secure_db_files()
+                    return
+                try:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except sqlite3.Error:
+                    pass
+                try:
+                    self._conn.close()
+                finally:
+                    self._conn = None
+                if lock_fd is not None:
+                    self._secure_db_files()
+        finally:
+            if lock_fd is not None:
+                _release_init_lock(lock_fd)
 
     # -- migrations -----------------------------------------------------
     def migration_versions(self):
@@ -227,16 +388,63 @@ class ReviewStore:
         return [row[0] for row in rows]
 
     def apply_migrations(self):
+        # Version read, DDL, and version registration run inside one
+        # BEGIN IMMEDIATE write transaction using individual statements:
+        # executescript() would implicitly commit each statement under
+        # isolation_level=None, breaking atomicity. The write lock serializes
+        # concurrent first opens: the loser blocks at BEGIN, then reads the
+        # winner's committed versions and converges instead of inserting
+        # duplicate rows.
         with self._lock:
-            existing = set(self.migration_versions())
-            for version, sql in MIGRATIONS:
-                if version in existing:
-                    continue
-                with self._conn:  # transactional DDL
-                    self._conn.executescript(sql)
-                    self._conn.execute(
-                        "INSERT INTO schema_migrations (version, applied_at)"
-                        " VALUES (?, ?)", (version, now_iso()))
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.Error as exc:
+                raise StoreError(
+                    f"cannot lock database for migrations: {exc}") from exc
+            try:
+                existing = set(self.migration_versions())
+                for version, sql in MIGRATIONS:
+                    if version in existing:
+                        continue
+                    for statement in (
+                            part.strip() for part in sql.split(";")):
+                        if statement:
+                            self._conn.execute(statement)
+                    try:
+                        self._conn.execute(
+                            "INSERT INTO schema_migrations"
+                            " (version, applied_at) VALUES (?, ?)",
+                            (version, now_iso()))
+                    except sqlite3.IntegrityError as exc:
+                        # A concurrent first open committed first; converge
+                        # on the winner's schema instead of crashing.
+                        existing = set(self.migration_versions())
+                        if version in existing:
+                            continue
+                        raise StoreError(
+                            f"migration {version} conflicts with concurrent"
+                            f" schema change: {exc}") from exc
+                    existing.add(version)
+                self._conn.execute("COMMIT")
+            except StoreError:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+            except sqlite3.Error as exc:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise StoreError(
+                    f"migration failed; rolled back: {exc}") from exc
+            except Exception:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
 
     # -- jobs -----------------------------------------------------------
     @staticmethod
@@ -391,6 +599,13 @@ class ReviewStore:
         return int(row[0])
 
     def summary(self, job_type=None):
+        # List membership (==, never hashing) is safe for unhashable filters
+        # such as lists and dicts: every non-None value outside JOB_TYPES is
+        # a validation error, never a silent zero-count and never a crash.
+        if job_type is not None and (
+                not isinstance(job_type, str) or job_type not in JOB_TYPES):
+            raise ValidationError(
+                f"job_type must be one of: {', '.join(JOB_TYPES)}")
         with self._lock:
             rows = self._conn.execute(
                 "SELECT snapshot, saved_full FROM jobs WHERE status = 'saved'").fetchall()
@@ -467,40 +682,50 @@ class ReviewStore:
                 raise ImportAbort(
                     f"legacy file has conflicting entries for review_id {key}")
             seen[key] = blob
+        # Read, plan, and apply run inside one BEGIN IMMEDIATE write
+        # transaction: a concurrent writer (service or another store) blocks
+        # until the import commits or rolls back, so the plan it validated is
+        # the state it writes against. A conflicting concurrent write that
+        # still collides surfaces as ImportAbort, never a raw IntegrityError.
         with self._lock:
-            existing = {row["review_id"]: row for row in self._conn.execute(
-                "SELECT review_id, status, saved_full, saved_at FROM jobs"
-            ).fetchall()}
-            imported, skipped = 0, 0
-            planned = []
-            planned_ids = set()
-            for full, recorded_at in entries:
-                if full["review_id"] in planned_ids:
-                    skipped += 1  # identical duplicate row in this file
-                    continue
-                row = existing.get(full["review_id"])
-                candidate = dict(full)
-                if row is None:
-                    planned.append((full, recorded_at))
-                    planned_ids.add(full["review_id"])
-                    continue
-                if row["status"] != "saved":
-                    raise ImportAbort(
-                        f"review_id {full['review_id']} already exists as a"
-                        " pending job; import aborted without partial writes")
-                stored = json.loads(row["saved_full"])
-                if self._same_full(stored, candidate):
-                    skipped += 1
-                    continue
-                raise ImportAbort(
-                    f"review_id {full['review_id']} already saved with different"
-                    " content; import aborted without partial writes")
-            if dry_run:
-                return {"imported": len(planned),
-                        "skipped_identical": skipped,
-                        "source_digest": digest, "dry_run": True}
-            self._conn.execute("BEGIN IMMEDIATE")
             try:
+                self._conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.Error as exc:
+                raise StoreError(
+                    f"cannot lock database for import: {exc}") from exc
+            try:
+                existing = {row["review_id"]: row for row in self._conn.execute(
+                    "SELECT review_id, status, saved_full, saved_at FROM jobs"
+                ).fetchall()}
+                imported, skipped = 0, 0
+                planned = []
+                planned_ids = set()
+                for full, recorded_at in entries:
+                    if full["review_id"] in planned_ids:
+                        skipped += 1  # identical duplicate row in this file
+                        continue
+                    row = existing.get(full["review_id"])
+                    candidate = dict(full)
+                    if row is None:
+                        planned.append((full, recorded_at))
+                        planned_ids.add(full["review_id"])
+                        continue
+                    if row["status"] != "saved":
+                        raise ImportAbort(
+                            f"review_id {full['review_id']} already exists as a"
+                            " pending job; import aborted without partial writes")
+                    stored = json.loads(row["saved_full"])
+                    if self._same_full(stored, candidate):
+                        skipped += 1
+                        continue
+                    raise ImportAbort(
+                        f"review_id {full['review_id']} already saved with different"
+                        " content; import aborted without partial writes")
+                if dry_run:
+                    self._conn.execute("ROLLBACK")
+                    return {"imported": len(planned),
+                            "skipped_identical": skipped,
+                            "source_digest": digest, "dry_run": True}
                 for full, recorded_at in planned:
                     token = secrets.token_urlsafe(24)
                     saved_full = dict(full, source_digest=digest,
@@ -521,6 +746,27 @@ class ReviewStore:
                         (digest, full["review_id"], recorded_at, now_iso()))
                     imported += 1
                 self._conn.execute("COMMIT")
+            except ImportAbort:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+            except sqlite3.IntegrityError as exc:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise ImportAbort(
+                    "import aborted on conflicting concurrent write;"
+                    f" no partial data was kept: {exc}") from exc
+            except sqlite3.Error as exc:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise StoreError(
+                    f"import failed; rolled back: {exc}") from exc
             except Exception:
                 try:
                     self._conn.execute("ROLLBACK")

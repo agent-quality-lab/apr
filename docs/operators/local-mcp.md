@@ -36,6 +36,7 @@ Contents (never commit, never copy into chat):
 | `reviews.db` (+ `-wal`/`-shm`) | 0600 | SQLite jobs, snapshots, ratings, migrations |
 | `service.pid` | 0600 | running daemon pid/port |
 | `service.lock` / `startup.lock` | 0600 | single-daemon + serialized-starter locks |
+| `init.lock` | 0600 | serializes database open/migration and close/checkpoint boundaries |
 | `service.log` | 0600 | daemon diagnostics (never credentials) |
 | `backups/` | 0700 dir, 0600 files | pre-import database copies |
 

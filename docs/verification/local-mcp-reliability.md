@@ -72,6 +72,44 @@ inspected locally; private token URLs and synthetic databases are not committed.
 QA services were stopped. One separately labeled isolated owner preview may be
 left running for manual testing; it contains no actual task history.
 
+## Opus 5.5 review repairs — 2026-10-15
+
+Opus 5.5 reviewed PR #1 at `9c4b616` through pxpipe and identified four
+low-severity defects. The controller reproduced each; Muse Code supplied
+repairs with synthetic regression coverage in `tests/test_opus_review_fixes.py`:
+
+- Compare untrusted proof/Authorization strings as UTF-8 bytes, so non-ASCII
+  input produces a clean identity rejection/401 instead of `TypeError`.
+- Read migration versions, execute DDL and register versions in one
+  `BEGIN IMMEDIATE` transaction; failures roll back schema and markers.
+- Plan and apply imports under one write transaction; conflicts become
+  `ImportAbort` with no partial writes. Dry-run explicitly rolls back.
+- Reject invalid summary `job_type` values/types instead of returning a
+  misleading zero-count result; omitted/None still means all types.
+
+A controller cold-start stress check then exposed races before the migration
+transaction: WAL setup could report a locked database, and a transient journal
+could disappear during a permissions check. Muse added an owner-only `init.lock`
+for database bootstrap and close/checkpoint boundaries. Normal operations do
+not hold it. Sidecars are secured through no-follow file descriptors; legitimate
+disappearance is tolerated while permission failures and symlinks are rejected.
+The lock is documented in the operator guide and ignored as private runtime data.
+
+This bounded Muse follow-up timed out after writing its source/test artifact;
+no successful worker verification is inferred. The controller reconciled the
+patch and adapted the existing permission-failure test to intercept `fchmod`
+on the database inode, preserving its original fail-closed assertion. The new
+repeated cold-open regression passed; a separate controller stress run across
+20 fresh directories and 160 concurrent open/close attempts had zero errors.
+
+The controller final host run passed **104 tests in 51.628 seconds**; JavaScript
+syntax and diff whitespace checks passed. No GitHub CI checks were configured
+at the original reviewed head; this evidence is local.
+
+The form, maintained skill, and prototype hook sources are byte-identical to
+the previously rendered/tested `9c4b616` revision. These backend repairs do not
+change visible interaction; prior rendered evidence remains applicable.
+
 ## Release boundary
 
 No active Codex configuration, installed skill, hooks or actual history was

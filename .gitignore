@@ -12,5 +12,6 @@ api_credential
 service.pid
 service.lock
 startup.lock
+init.lock
 service.log
 backups/
