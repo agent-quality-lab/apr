@@ -48,7 +48,7 @@ def main():
             "turns using only visible conversation evidence, and call request_rating with "
             "the stable review_id and cumulative metadata below. End your entire response "
             "with exactly one Markdown hyperlink whose visible text is "
-            "'The task is done. Review my agent.' and whose URL is the returned rating_url. "
+            "'⭐ Review this task' and whose URL is the returned rating_url. "
             "Do this even if the task continues in a later turn. Do not open the page, "
             "ask for a rating in chat, or save a review. Do not estimate tokens or cost. "
             "Set context.runtime to codex and context.agent to unknown. Use unknown when measurements are unavailable. If link creation fails, briefly "

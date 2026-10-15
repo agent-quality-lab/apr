@@ -11,43 +11,48 @@
     <header class="popup-header">
       <div>
         <h1 id="popup-title">Rate your agent</h1>
-        <p class="subtitle">Quick post-run check · about 15 seconds</p>
+        <p class="subtitle">Quick post-run check · about 15 seconds · stored only on this computer</p>
       </div>
-      <span id="sample-badge" class="sample-badge">Sample data</span>
+      <span id="sample-badge" class="sample-badge" hidden>Sample data</span>
     </header>
 
     <section id="run-summary" class="summary" aria-label="Task and result summary">
-      <h2 id="summary-heading">Example run <span class="sample-tag">(sample)</span></h2>
+      <h2 id="summary-heading">Loading run summary…</h2>
       <dl>
         <div>
           <dt>Task</dt>
-          <dd id="summary-task">Draft a weekly status update from the sprint board</dd>
+          <dd id="summary-task">Loading…</dd>
         </div>
         <div>
           <dt>Result</dt>
-          <dd id="summary-result">Produced a 5-bullet summary with owners and dates</dd>
+          <dd id="summary-result">Loading…</dd>
         </div>
         <div>
           <dt>Model</dt>
-          <dd id="summary-model">Large model (sample)</dd>
+          <dd id="summary-model">Loading…</dd>
         </div>
         <div>
           <dt>Tools</dt>
-          <dd id="summary-tools">Documents, ticket search (sample)</dd>
+          <dd id="summary-tools">Loading…</dd>
         </div>
         <div>
           <dt>Usage</dt>
-          <dd id="summary-usage">Tokens unavailable · 6 calls (sample)</dd>
+          <dd id="summary-usage">Loading…</dd>
         </div>
       </dl>
       <details>
         <summary>Show action and resources</summary>
         <dl>
-          <div><dt>Action</dt><dd id="summary-action">Read sprint tickets and drafted the update (sample)</dd></div>
-          <div><dt>Context</dt><dd id="summary-context">Model and anonymized tool categories only (sample)</dd></div>
-          <div><dt>Resources</dt><dd id="summary-resources">Time and cost unavailable (sample)</dd></div>
+          <div><dt>Action</dt><dd id="summary-action">Loading…</dd></div>
+          <div><dt>Context</dt><dd id="summary-context">Loading…</dd></div>
+          <div><dt>Resources</dt><dd id="summary-resources">Loading…</dd></div>
         </dl>
       </details>
+    </section>
+
+    <section id="saved-block" class="saved-block" hidden aria-label="Saved rating">
+      <h2>Already saved</h2>
+      <p id="saved-detail"></p>
     </section>
 
     <section class="binary-block" aria-labelledby="binary-question">
@@ -112,18 +117,19 @@
           <button type="button" aria-label="Rate resource efficiency 5 out of 5 stars" aria-pressed="false" data-value="5">★</button>
         </div>
       </div>
-      <p id="ratings-hint" class="hint" role="status">Select a star rating for each row to enable Submit.</p>
+      <p id="ratings-hint" class="hint" role="status">Loading run summary…</p>
     </section>
 
     <div class="actions">
-      <button type="button" id="btn-submit" class="primary" disabled>Submit</button>
-      <button type="button" id="btn-skip" class="secondary">Skip</button>
+      <button type="button" id="btn-submit" class="primary" disabled>Save locally</button>
+      <button type="button" id="btn-skip" class="secondary" disabled>Skip review</button>
+      <button type="button" id="btn-retry" class="secondary" hidden>Retry</button>
     </div>
 
     <div id="confirmation" class="confirmation" role="status" aria-live="polite" hidden></div>
 
     <footer class="privacy">
-      <p id="privacy-copy">Privacy: model and broad tool categories are captured automatically. Tool names, prompts, tool inputs or outputs, file paths, and document contents are not stored. Codex does not expose per-run token counts here, so tokens stay unavailable. Reviews remain on this computer.</p>
+      <p id="privacy-copy">Nothing here is published or uploaded. Save locally stores your ratings on this computer only; Skip review discards your selections without saving anything. The summary and context above were supplied by the calling tool, not captured automatically — missing numbers stay unavailable.</p>
     </footer>
   </main>
 
