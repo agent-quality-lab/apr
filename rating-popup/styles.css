@@ -98,7 +98,31 @@ h1 {
   color: var(--muted);
   font-weight: 600;
 }
-.summary dd { margin: 0; }
+.summary dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
+}
+
+.saved-block {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: #f8fafc;
+  font-size: 0.82rem;
+}
+
+.saved-block h2 {
+  font-size: 0.86rem;
+  margin: 0 0 6px;
+}
+
+.saved-block p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
 
 .binary-block {
   margin-top: 14px;

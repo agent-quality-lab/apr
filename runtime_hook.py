@@ -55,7 +55,7 @@ def handle(event, runtime):
         "the cumulative run metadata below. Set context.runtime and context.agent to the supplied values; "
         "set context.model to the supplied model. Do not read a transcript or estimate unavailable usage. "
         "Use unknown for tokens and cost when no measurement is provided. End the whole response with one "
-        "Markdown link whose visible text is 'The task is done. Review my agent.' and whose URL is the returned rating_url. "
+        "Markdown link whose visible text is '⭐ Review this task' and whose URL is the returned rating_url. "
         "If link creation fails, say so briefly.\n\n"
         f"review_id={run['review_id']}; runtime={run['runtime']}; agent={run['agent']}; model={run['model']}; "
         f"tool categories={category_text}; tool calls={run['tool_calls']}; elapsed seconds={run['elapsed_time']}; "

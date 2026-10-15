@@ -5,3 +5,12 @@ __pycache__/
 reviews.jsonl
 run-state.json
 run-state-*.json
+# local service private data (may appear if APR_DATA_DIR points at the checkout)
+reviews.db*
+config.json
+api_credential
+service.pid
+service.lock
+startup.lock
+service.log
+backups/
