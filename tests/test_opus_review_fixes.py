@@ -8,13 +8,15 @@ import json as json_module
 import os
 import sqlite3
 import stat
+import subprocess
+import sys
 import threading
 import unittest
 
 import local_service as ls
 from review_schema import ValidationError
 from review_store import ImportAbort, ReviewStore, StoreError
-from tests.helpers import CARD, fresh_data_dir, full_payload, jsonl_record, write_jsonl
+from tests.helpers import CARD, REPO_ROOT, fresh_data_dir, full_payload, jsonl_record, write_jsonl
 
 
 def fake_identity_transport(testcase, identity_body):
@@ -355,6 +357,63 @@ class ColdOpenInitLockTest(unittest.TestCase):
             finally:
                 store.close()
             self._assert_private_layout(data_dir)
+
+class CrossProcessLockTest(unittest.TestCase):
+    def _probe_lock(self, db_path):
+        probe = """import fcntl,os,sys
+fd=os.open(sys.argv[1],os.O_RDWR)
+try:
+ try:
+  fcntl.lockf(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+  print('acquired')
+ except BlockingIOError:print('blocked')
+finally:os.close(fd)
+"""
+        return subprocess.check_output(
+            [sys.executable, "-c", probe, db_path], text=True,
+            cwd=REPO_ROOT, timeout=10).strip()
+
+    def test_sqlite_locks_survive_second_same_process_store(self):
+        data_dir = fresh_data_dir(self)
+        first = ReviewStore.open(data_dir)
+        second = None
+        try:
+            self.assertEqual(self._probe_lock(first.db_path), "blocked")
+            second = ReviewStore.open(data_dir)
+            self.assertEqual(self._probe_lock(first.db_path), "blocked")
+            second.close()
+            second = None
+            self.assertEqual(self._probe_lock(first.db_path), "blocked")
+        finally:
+            if second is not None:
+                second.close()
+            first.close()
+
+    def test_other_process_close_preserves_live_wal_and_later_save(self):
+        data_dir = fresh_data_dir(self)
+        first = ReviewStore.open(data_dir)
+        try:
+            first.request_job(dict(CARD))
+            child = """import sys
+from review_store import ReviewStore
+store=ReviewStore.open(sys.argv[1]);store.close()
+"""
+            subprocess.run([sys.executable, "-c", child, data_dir],
+                           cwd=REPO_ROOT, check=True, timeout=15)
+            self.assertTrue(os.path.isfile(first.db_path + "-wal"))
+            first.save_rating(full_payload())
+            reader = """import json,sys
+from review_store import ReviewStore
+store=ReviewStore.open(sys.argv[1])
+try:print(json.dumps({'count':store.saved_count(),'status':store.get_card_by_review_id(sys.argv[2])['status']}))
+finally:store.close()
+"""
+            visible = json_module.loads(subprocess.check_output(
+                [sys.executable, "-c", reader, data_dir, CARD["review_id"]],
+                cwd=REPO_ROOT, text=True, timeout=15))
+            self.assertEqual(visible, {"count": 1, "status": "saved"})
+        finally:
+            first.close()
 
 
 if __name__ == "__main__":

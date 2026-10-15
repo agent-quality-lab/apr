@@ -310,18 +310,16 @@ class DbSidefileFailClosedTest(unittest.TestCase):
         import review_store
         data_dir = fresh_data_dir(self)
         self._open_then_close(data_dir)
-        real_fchmod = os.fchmod
-        db_identity = os.stat(os.path.join(data_dir, "reviews.db"))
+        real_chmod = os.chmod
+        db_path = os.path.abspath(os.path.join(data_dir, "reviews.db"))
 
-        def flaky_fchmod(fd, mode):
-            candidate = os.fstat(fd)
-            if (candidate.st_dev, candidate.st_ino) == (
-                    db_identity.st_dev, db_identity.st_ino):
+        def flaky_chmod(path, mode, *args, **kwargs):
+            if os.path.abspath(str(path)) == db_path:
                 raise OSError("synthetic permission failure")
-            return real_fchmod(fd, mode)
+            return real_chmod(path, mode, *args, **kwargs)
 
-        review_store.os.fchmod = flaky_fchmod
-        self.addCleanup(setattr, review_store.os, "fchmod", real_fchmod)
+        review_store.os.chmod = flaky_chmod
+        self.addCleanup(setattr, review_store.os, "chmod", real_chmod)
         with self.assertRaises(StoreError):
             ReviewStore.open(data_dir)
 

@@ -201,50 +201,73 @@ def _release_init_lock(fd):
             pass
 
 
+def _chmod_private_nofollow(path):
+    """Set mode 0600 by path without opening the file.
+
+    Uses follow_symlinks=False where the platform supports it, so an exact
+    path that is (or has become) a symlink is never followed. Plain by-path
+    chmod never opens a file descriptor, so SQLite's POSIX process locks on
+    the database and sidefiles are left intact.
+    """
+    if os.chmod in getattr(os, "supports_follow_symlinks", set()):
+        os.chmod(path, 0o600, follow_symlinks=False)
+    else:
+        os.chmod(path, 0o600)
+
+
 def _secure_db_candidate(candidate):
     """Enforce 0600 on one existing database sidecar without following links.
+
+    Never opens the candidate: opening and closing an extra file descriptor
+    on reviews.db/-shm releases this process's POSIX locks held by SQLite
+    (SQLite howtocorrupt.html section 2.2), silently dropping the database
+    lock even while another connection in this process still uses it. Only
+    lstat/islink validation and by-path chmod are used here; the init.lock
+    descriptor is a separate file and is unaffected.
 
     A candidate that disappears between the existence check and securing
     (SQLite checkpoint/commit cleanup racing a concurrent bootstrap) is a
     legitimate absence, not an error. Permission failures still raise
     StoreError, and symlinks/non-regular files are always refused.
     """
-    if os.path.islink(candidate):
-        raise StoreError(
-            f"refusing symlinked database file: {candidate}")
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(candidate, os.O_RDWR | nofollow)
+        mode = os.lstat(candidate).st_mode
     except FileNotFoundError:
         return
     except OSError as exc:
-        if exc.errno == errno.ELOOP or os.path.islink(candidate):
-            raise StoreError(
-                f"refusing symlinked database file: {candidate}") from exc
-        if os.path.lexists(candidate) and not os.path.isfile(candidate):
-            raise StoreError(
-                f"database path is not a regular file: {candidate}") from exc
         raise StoreError(
             f"cannot secure database file {candidate}: {exc}") from exc
+    if stat.S_ISLNK(mode) or os.path.islink(candidate):
+        raise StoreError(
+            f"refusing symlinked database file: {candidate}")
+    if not stat.S_ISREG(mode):
+        raise StoreError(
+            f"database path is not a regular file: {candidate}")
     try:
-        try:
-            is_regular = stat.S_ISREG(os.fstat(fd).st_mode)
-        except OSError as exc:
+        _chmod_private_nofollow(candidate)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        if os.path.islink(candidate):
             raise StoreError(
-                f"cannot secure database file {candidate}: {exc}") from exc
-        if not is_regular:
-            raise StoreError(
-                f"database path is not a regular file: {candidate}")
-        try:
-            os.fchmod(fd, 0o600)
-        except OSError as exc:
-            raise StoreError(
-                f"cannot secure database file {candidate}: {exc}") from exc
-    finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+                f"refusing symlinked database file: {candidate}") from exc
+        raise StoreError(
+            f"cannot secure database file {candidate}: {exc}") from exc
+    # A swap between validation and chmod must not pass silently: a symlink
+    # (or non-regular file) observed after securing is still refused.
+    try:
+        post = os.lstat(candidate).st_mode
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise StoreError(
+            f"cannot secure database file {candidate}: {exc}") from exc
+    if stat.S_ISLNK(post) or os.path.islink(candidate):
+        raise StoreError(
+            f"refusing symlinked database file: {candidate}")
+    if not stat.S_ISREG(post):
+        raise StoreError(
+            f"database path is not a regular file: {candidate}")
 
 
 def now_iso():
@@ -300,7 +323,7 @@ class ReviewStore:
             self._conn.row_factory = sqlite3.Row
             if new_db:
                 try:
-                    os.chmod(self.db_path, 0o600)
+                    _chmod_private_nofollow(self.db_path)
                 except OSError as exc:
                     try:
                         self._conn.close()
@@ -310,6 +333,14 @@ class ReviewStore:
                     raise StoreError(
                         f"cannot secure new database {self.db_path}: {exc}"
                     ) from exc
+                if os.path.islink(self.db_path):
+                    try:
+                        self._conn.close()
+                    except sqlite3.Error:
+                        pass
+                    self._conn = None
+                    raise StoreError(
+                        f"refusing symlinked database file: {self.db_path}")
             try:
                 self.apply_migrations()
             except Exception:

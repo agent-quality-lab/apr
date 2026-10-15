@@ -2,7 +2,7 @@
 
 Date: 2026-10-15. Baseline: `9767588a4ffa17915ef017603cd2fa47c2ec5f64`.
 Implementation: Muse Code; integration and rendered QA: controller; independent
-source reviews: Droid. Everything below used isolated synthetic data.
+source reviews: Droid and Opus 5.5 through pxpipe. Everything below used isolated synthetic data.
 
 ## Regression evidence
 
@@ -91,14 +91,13 @@ A controller cold-start stress check then exposed races before the migration
 transaction: WAL setup could report a locked database, and a transient journal
 could disappear during a permissions check. Muse added an owner-only `init.lock`
 for database bootstrap and close/checkpoint boundaries. Normal operations do
-not hold it. Sidecars are secured through no-follow file descriptors; legitimate
-disappearance is tolerated while permission failures and symlinks are rejected.
+not hold it. Sidecars use by-path permission checks; legitimate disappearance is tolerated
+while permission failures and symlinks are rejected.
 The lock is documented in the operator guide and ignored as private runtime data.
 
 This bounded Muse follow-up timed out after writing its source/test artifact;
 no successful worker verification is inferred. The controller reconciled the
-patch and adapted the existing permission-failure test to intercept `fchmod`
-on the database inode, preserving its original fail-closed assertion. The new
+patch and preserved the existing permission-failure assertion. The new
 repeated cold-open regression passed; a separate controller stress run across
 20 fresh directories and 160 concurrent open/close attempts had zero errors.
 
@@ -109,6 +108,28 @@ at the original reviewed head; this evidence is local.
 The form, maintained skill, and prototype hook sources are byte-identical to
 the previously rendered/tested `9c4b616` revision. These backend repairs do not
 change visible interaction; prior rendered evidence remains applicable.
+
+## Cross-process SQLite lock repair
+
+The Opus follow-up confirmed the four original fixes but found a high-severity
+regression in descriptor-based sidecar securing. Closing a non-SQLite descriptor
+can cancel SQLite's POSIX process locks ([SQLite section 2.2](https://www.sqlite.org/howtocorrupt.html#_posix_advisory_locks_canceled_by_a_separate_thread_doing_close_)).
+The controller reproduced the dropped lock and removal of a still-live WAL on
+`d616b6c`. Two cross-process tests fail on that immutable revision.
+
+Muse replaced database/sidecar descriptor opens with `lstat` validation and
+by-path `chmod` (no-follow where the platform supports it), preserving the
+separate `init.lock`. A second same-process store can no longer release the
+first store's locks through this helper. Its bounded file-only run timed out
+after writing source and adapting the permission-failure test; the controller
+completed regression coverage and documentation, with no worker success inferred.
+The tests check the database lock from a fresh process, open/close a second
+same-process connection, retain a live WAL across another process's close, and
+read a later synthetic save from a fresh process before the first store closes.
+
+The final controller host suite passed **106 tests in 51.781 seconds**. A fresh
+160-open cold-start stress run also had zero errors; JS syntax, diff checks and
+UI-asset identity checks passed. All data remained synthetic and isolated.
 
 ## Release boundary
 
