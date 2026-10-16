@@ -571,7 +571,12 @@ class ServiceHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404, "This rating link is invalid")
             return
         if suffix == "api/review":
-            self.send_json(200, self._public_card(card))
+            public = self._public_card(card)
+            public["runtime_evidence"] = self.server.store.runtime_review_projection(
+                card["review_id"])
+            public["runtime_evidence_at_rating"] = self.server.store.runtime_rating_projection(
+                card["review_id"])
+            self.send_json(200, public)
             return
         if suffix in STATIC_FILES:
             file_name, content_type = STATIC_FILES[suffix]

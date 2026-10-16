@@ -38,6 +38,7 @@ Contents (never commit, never copy into chat):
 | `service.lock` / `startup.lock` | 0600 | single-daemon + serialized-starter locks |
 | `init.lock` | 0600 | serializes database open/migration and close/checkpoint boundaries |
 | `service.log` | 0600 | daemon diagnostics (never credentials) |
+| `capture.log` | 0600 | sanitized hook failure class and timestamp only |
 | `backups/` | 0700 dir, 0600 files | pre-import database copies |
 
 Before any private request sends its credential or review body, the client
@@ -69,12 +70,67 @@ with the same ID returns the saved URL and state without changing the rated
 snapshot. A new job always needs an explicit new `review_id`. Skipping writes
 no rating and leaves the job pending.
 
+## Optional native Codex capture (example only)
+
+`codex_capture.py` accepts lifecycle command-hook JSON on stdin and writes an
+allowlisted projection directly to the same private SQLite store. It emits no
+stdout, makes no model request, and never reads transcript files. The example
+registration is `hooks.codex.example.json`; replace its placeholder source
+path and merge it into Codex configuration only when deliberately opting in.
+This checkout does not install or activate it. The collector stores HMACed
+session, turn, and tool IDs using a random private per-store salt. Prompt text,
+tool names, arguments, results, paths, and raw hook objects are discarded.
+Each hook's SQLite busy wait and store-init lock wait are capped at 250 ms;
+lock contention produces a content-free per-chat gap when the store can be
+written, or one fixed `capture_error` line in the private `capture.log`
+otherwise. These caps reduce contention time; they are not a guarantee that
+every callback completes before Codex's hook deadline. The example gives
+`Interrupt` the supported 3-second timeout, whose end-to-end behavior still
+requires isolated runtime verification.
+
+After capture, run:
+
+```sh
+python3 /absolute/path/to/agent-performance-review/codex_capture.py list
+```
+
+The command starts the local service and prints the exact stable review URL for
+each captured native session. It does not guess from the most recent chat.
+Review cards show receipt-observed wall timing, local tool starts, unknown token
+and cost values, and coverage gaps. A new captured event changes the pending
+card revision; an already-open rating form must reload before it can save. On
+save, the store atomically freezes the event count and derived projection seen
+at that moment. Later evidence is shown as post-rating evidence and does not
+change the saved snapshot or saved evidence watermark.
+
+`resume` can reuse the same URL only when Codex supplies the same native
+session ID. Actual identity continuity across desktop resume/restart has not
+been verified. A changed ID creates a separate review; the adapter does not
+join by working directory or recency. Reused IDs on `clear` or `fork` are
+flagged unsupported. Tool events without a previously observed root turn start
+are marked unattributed and excluded from root totals. Hosted tools and missed
+hooks remain coverage gaps. The `Stop` hook records a stopped turn, not task
+success. This capture does not provide the repeated assistant footer link;
+automatic link presentation requires a separate verified host capability.
+SessionStart has no documented occurrence ID, so repeated `resume` or
+`compact` markers deduplicate by source and expose an occurrence-ambiguity gap;
+model identity is taken from turn events, not treated as a complete list from
+resume markers. A recognized lifecycle hook without a native session ID writes only a fixed
+sanitized failure class to local diagnostics.
+
+Rollout remains opt-in until a human verifies real startup, multiple turns,
+interleaved chats, resume identity, restart persistence, rating freeze behavior,
+and the URL in the intended Codex desktop. Disable the registration to stop
+capture. The review records remain in the existing local APR data store and
+follow its normal retention handling.
+
 ## Manual Codex integration (owner, after review — not installed here)
 
 This repository does not install anything into `~/.codex` or any active
-server/skill configuration; the current active Codex MCP still points at the
-older prototype. After controller review, the owner runs these exact steps
-(canonical; the README points here and carries no second copy):
+server/skill configuration. Compare the desired checkout with the local
+configuration before making changes. After controller review, an operator
+may run these steps (canonical; the README points here and carries no second
+copy):
 
 1. Back up the existing Codex MCP config (`~/.codex/config.toml`) aside.
 2. Register this checkout's bridge (verified against
@@ -104,8 +160,9 @@ older prototype. After controller review, the owner runs these exact steps
    `expires_in_seconds: null`.
 4. Restart the Codex host, invoke the `agent-performance-review` skill for
    one synthetic `request_rating`, and confirm the footer link format.
-5. Keep hooks off: `hooks.json` in this checkout is a prototype reference
-   only; no hook modules are installed or wired.
+5. Keep native capture off unless separately opting in to the documented
+   `hooks.codex.example.json`; `hooks.json` and its legacy hook modules remain
+   unsupported prototype references. No hook modules are installed or wired.
 
 ## Legacy import
 
@@ -140,8 +197,9 @@ before every applying import. The original file is never modified or deleted.
 
 - Pending cards and saved ratings persist until the data directory is
   explicitly deleted. There is no retention job and no remote copy.
-- No automatic capture: model/context values are caller-supplied; token/cost
-  numbers stay `unknown` unless the caller provides them.
+- Manual review cards use caller-supplied model/context values. Opt-in Codex
+  cards show separately labeled local hook observations; neither path captures
+  prompt/tool contents or estimates token/cost values, which stay `unknown`.
 - No auth, cloud, sharing, or website changes are part of this milestone.
 - Isolated rendered desktop/mobile QA is recorded in the verification report.
   A real multi-turn Codex walkthrough remains pending the reviewed installation.
@@ -171,4 +229,5 @@ Nothing in this checkout installs itself: no `~/.codex` edits, no hook
 wiring, no service autostart. Prototype hook modules
 (`capture_metadata_hook.py`, `runtime_hook.py`, `stop_hook.py`,
 `run_state.py`, `hooks.json`) stay uninstalled and unsupported. The single
-install procedure is "Manual Codex integration" above.
+MCP/skill install procedure is "Manual Codex integration" above. Native hook
+capture is a separate opt-in example described earlier.

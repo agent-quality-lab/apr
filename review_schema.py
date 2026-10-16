@@ -7,6 +7,7 @@ Preserves the accepted tool fields; fixes: strict skip, non-finite rejection.
 import json
 import math
 import re
+from datetime import datetime
 
 JOB_TYPES = ["writing", "research", "coding", "other"]
 VERIFICATION = ["verified", "partial", "unverified", "unknown"]
@@ -21,6 +22,10 @@ SUMMARY_FIELDS = {"task": "What the user needed done.",
 MAX_TEXT = 500
 MAX_VALUE = 200
 REVIEW_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+RUNTIME_KINDS = {"session_start", "turn_start", "tool_pre", "tool_post",
+                 "turn_stopped", "turn_interrupted", "unattributed_tool_pre",
+                 "unattributed_tool_post"}
+TOOL_CATEGORIES = {"shell", "mcp", "other"}
 
 
 class ValidationError(ValueError):
@@ -145,3 +150,44 @@ def validate_revision(value):
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValidationError("revision must be a positive integer")
     return value
+
+
+def validate_runtime_event(event):
+    """Strict content-free projection accepted from the native adapter."""
+    allowed = {"kind", "turn_id", "tool_use_id", "model_slug", "safe_tool_category",
+               "observed_at_utc", "observed_monotonic_ns", "clock_epoch", "source",
+               "adapter_version"}
+    check_keys(event, "runtime event", allowed, ("kind", "observed_at_utc",
+                "observed_monotonic_ns", "adapter_version"))
+    if event["kind"] not in RUNTIME_KINDS:
+        raise ValidationError("unsupported runtime event kind")
+    out = dict(event)
+    for key in ("turn_id", "tool_use_id"):
+        value = out.get(key)
+        if value is not None and (not isinstance(value, str) or not value or len(value) > 512):
+            raise ValidationError("invalid native event identifier")
+    for key in ("model_slug", "source", "clock_epoch", "adapter_version"):
+        value = out.get(key)
+        if value is not None and (not isinstance(value, str) or len(value) > 128 or
+                                  any(ord(ch) < 32 for ch in value)):
+            raise ValidationError("invalid runtime metadata")
+    if out.get("source") not in {None, "startup", "resume", "compact", "clear", "fork"}:
+        raise ValidationError("unsupported runtime source")
+    if out.get("safe_tool_category") not in {None, *TOOL_CATEGORIES}:
+        raise ValidationError("unsupported safe tool category")
+    if not isinstance(out["observed_at_utc"], str):
+        raise ValidationError("invalid event timestamp")
+    try:
+        datetime.fromisoformat(out["observed_at_utc"])
+    except ValueError as exc:
+        raise ValidationError("invalid event timestamp") from exc
+    mono = out["observed_monotonic_ns"]
+    if isinstance(mono, bool) or not isinstance(mono, int) or mono < 0:
+        raise ValidationError("invalid monotonic timestamp")
+    if not isinstance(out["adapter_version"], str) or not out["adapter_version"]:
+        raise ValidationError("invalid adapter version")
+    if out["kind"] in {"turn_start", "turn_stopped", "turn_interrupted"} and not out.get("turn_id"):
+        raise ValidationError("turn event requires turn_id")
+    if out["kind"] in {"tool_pre", "tool_post"} and not out.get("tool_use_id"):
+        raise ValidationError("tool event requires tool_use_id")
+    return out

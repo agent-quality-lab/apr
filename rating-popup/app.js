@@ -279,6 +279,68 @@
       " · Tool calls " + readable(resources.tool_calls);
   }
 
+  function updateRuntimeEvidence(evidence, frozen) {
+    var section = document.getElementById("runtime-evidence");
+    if (!evidence) { section.hidden = true; return; }
+    section.hidden = false;
+    document.getElementById("capture-coverage").textContent =
+      "Codex local hook receipts · " + evidence.coverage + " · started " + readable(evidence.capture_started_at) +
+      " · start source " + (evidence.start_source || "unknown") +
+      " · adapter " + (evidence.adapter_version || "unknown") +
+      " · last event " + readable(evidence.last_observed_at);
+    document.getElementById("capture-turns").textContent =
+      evidence.observed_turn_count + " observed · " + evidence.open_turn_count + " incomplete/open";
+    var toolSpans = (evidence.tool_elapsed_seconds || []).map(function (seconds) {
+      return Math.round(seconds * 10) / 10 + "s";
+    });
+    var categories = Object.keys(evidence.tool_categories || {}).map(function (name) {
+      return name + " " + evidence.tool_categories[name];
+    }).join(", ");
+    document.getElementById("capture-tools").textContent = evidence.tool_call_count +
+      " observed local tool starts (" + (categories || "categories unknown") + ") · paired wall time " +
+      (toolSpans.length ? toolSpans.join(", ") : "unknown");
+    var spans = (evidence.turns || []).map(function (turn) {
+      return turn.elapsed_seconds === null ? "unknown" : Math.round(turn.elapsed_seconds) + "s";
+    });
+    document.getElementById("capture-timing").textContent =
+      "Turn wall time " + (spans.length ? spans.join(", ") : "unknown") +
+      " · chat wall span " + (evidence.chat_wall_seconds === null ? "unknown" :
+        Math.round(evidence.chat_wall_seconds) + "s") +
+      " · UTC hook receipt wall time · tokens/cost unknown";
+    document.getElementById("capture-models").textContent =
+      (evidence.models || []).join(", ") || "unknown";
+    var gaps = (evidence.coverage_gaps || []).map(function (gap) {
+      return gap.replace(/_/g, " ");
+    }).join(", ");
+    if (evidence.evidence_after_rating) {
+      var laterEvidence = [];
+      if (evidence.post_rating_event_count) {
+        laterEvidence.push(evidence.post_rating_event_count + " new events since rating");
+      }
+      if (evidence.post_rating_gap_count) {
+        laterEvidence.push(evidence.post_rating_gap_count + " new capture warnings since rating" +
+          (evidence.post_rating_gap_keys.length ? " (" + evidence.post_rating_gap_keys.map(function (gap) {
+            return gap.replace(/_/g, " ");
+          }).join(", ") + ")" : ""));
+      }
+      gaps += (gaps ? " · " : "") + laterEvidence.join(" · ") +
+        " · latest post-rating evidence " + readable(evidence.evidence_after_rating);
+    }
+    document.getElementById("capture-gaps").textContent =
+      gaps || "Observed local hook events provide partial coverage; hosted tools and missed hooks may be absent.";
+    var watermark = document.getElementById("rating-watermark");
+    if (frozen) {
+      var measured = frozen.projection || {};
+      watermark.hidden = false;
+      watermark.textContent = "Frozen evidence at rating: " + frozen.event_count +
+        " events through " + readable(measured.last_observed_at) +
+        ", " + measured.observed_turn_count + " turns and " +
+        measured.tool_call_count + " observed tool starts. Captured " + frozen.captured_at + ".";
+    } else {
+      watermark.hidden = true;
+    }
+  }
+
   async function loadCard() {
     cardLoaded = false;
     updateSubmit();
@@ -310,6 +372,7 @@
     cardRevision = card.revision;
     cardLoaded = true;
     updateSummary(card.snapshot);
+    updateRuntimeEvidence(card.runtime_evidence, card.runtime_evidence_at_rating);
     if (card.status === "saved") {
       showSavedState(card);
       return;
