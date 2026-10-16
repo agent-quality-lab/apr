@@ -1,0 +1,22 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {"matcher": "startup|resume|compact|clear|fork", "hooks": [{"type": "command", "command": "python3 /absolute/path/to/agent-performance-review/codex_capture.py capture", "timeout": 10}]}
+    ],
+    "UserPromptSubmit": [
+      {"matcher": ".*", "hooks": [{"type": "command", "command": "python3 /absolute/path/to/agent-performance-review/codex_capture.py capture", "timeout": 10}]}
+    ],
+    "PreToolUse": [
+      {"matcher": ".*", "hooks": [{"type": "command", "command": "python3 /absolute/path/to/agent-performance-review/codex_capture.py capture", "timeout": 10}]}
+    ],
+    "PostToolUse": [
+      {"matcher": ".*", "hooks": [{"type": "command", "command": "python3 /absolute/path/to/agent-performance-review/codex_capture.py capture", "timeout": 10}]}
+    ],
+    "Stop": [
+      {"matcher": ".*", "hooks": [{"type": "command", "command": "python3 /absolute/path/to/agent-performance-review/codex_capture.py capture", "timeout": 10}]}
+    ],
+    "Interrupt": [
+      {"matcher": ".*", "hooks": [{"type": "command", "command": "python3 /absolute/path/to/agent-performance-review/codex_capture.py capture", "timeout": 3}]}
+    ]
+  }
+}

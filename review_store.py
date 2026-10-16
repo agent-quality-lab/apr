@@ -8,12 +8,14 @@ stay mode 0600 inside a mode 0700 directory.
 import errno
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 import secrets
 import sqlite3
 import stat
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -49,7 +51,67 @@ CREATE TABLE IF NOT EXISTS import_provenance (
 );
 """
 
-MIGRATIONS = [(1, MIGRATION_1), (2, MIGRATION_2)]
+MIGRATION_3 = """
+CREATE TABLE IF NOT EXISTS runtime_bindings (
+    runtime TEXT NOT NULL,
+    installation_key TEXT NOT NULL,
+    native_chat_key TEXT NOT NULL,
+    identity_source TEXT NOT NULL,
+    review_id TEXT NOT NULL UNIQUE REFERENCES jobs(review_id),
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    start_source TEXT NOT NULL,
+    adapter_version TEXT NOT NULL,
+    PRIMARY KEY (runtime, installation_key, native_chat_key)
+);
+CREATE TABLE IF NOT EXISTS runtime_events (
+    event_key TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL REFERENCES jobs(review_id),
+    turn_key TEXT,
+    kind TEXT NOT NULL,
+    observed_at_utc TEXT NOT NULL,
+    observed_monotonic_ns INTEGER NOT NULL,
+    clock_epoch TEXT,
+    model_slug TEXT,
+    safe_tool_category TEXT,
+    tool_key TEXT,
+    source TEXT,
+    adapter_version TEXT NOT NULL,
+    schema_version INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS runtime_events_review_turn
+    ON runtime_events(review_id, turn_key, kind);
+CREATE TABLE IF NOT EXISTS runtime_turns (
+    review_id TEXT NOT NULL REFERENCES jobs(review_id),
+    turn_key TEXT NOT NULL,
+    first_observed_at TEXT,
+    terminal_observed_at TEXT,
+    terminal_kind TEXT,
+    first_model TEXT,
+    last_model TEXT,
+    coverage TEXT NOT NULL,
+    PRIMARY KEY (review_id, turn_key)
+);
+CREATE TABLE IF NOT EXISTS runtime_metadata (
+    key TEXT PRIMARY KEY,
+    value BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS runtime_gaps (
+    review_id TEXT NOT NULL REFERENCES jobs(review_id),
+    gap_key TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 1,
+    last_seen_at TEXT NOT NULL,
+    PRIMARY KEY (review_id, gap_key)
+);
+CREATE TABLE IF NOT EXISTS runtime_rating_evidence (
+    review_id TEXT PRIMARY KEY REFERENCES jobs(review_id),
+    captured_at TEXT NOT NULL,
+    event_count INTEGER NOT NULL,
+    projection_json TEXT NOT NULL
+);
+"""
+
+MIGRATIONS = [(1, MIGRATION_1), (2, MIGRATION_2), (3, MIGRATION_3)]
 
 CONTEXT_SUBSET = ("review_id", "job_type", "task", "action", "result",
                   "verification", "context", "resources")
@@ -144,7 +206,7 @@ def _init_lock_path(data_dir):
     return os.path.join(str(data_dir), INIT_LOCK_NAME)
 
 
-def _acquire_init_lock(data_dir):
+def _acquire_init_lock(data_dir, timeout=None):
     """Create the owner-only init lock and take an exclusive flock.
 
     Returns the open fd; the caller must pass it to _release_init_lock.
@@ -174,11 +236,25 @@ def _acquire_init_lock(data_dir):
         except OSError as exc:
             raise StoreError(
                 f"cannot secure init lock {path}: {exc}") from exc
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-        except OSError as exc:
-            raise StoreError(
-                f"cannot serialize store initialization: {exc}") from exc
+        if timeout is None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError as exc:
+                raise StoreError(
+                    f"cannot serialize store initialization: {exc}") from exc
+        else:
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise StoreError("store initialization lock timed out")
+                    time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+                except OSError as exc:
+                    raise StoreError(
+                        f"cannot serialize store initialization: {exc}") from exc
     except Exception:
         try:
             os.close(fd)
@@ -278,11 +354,16 @@ class ReviewStore:
     #: SQLite sidecar files SQLite may create beside the database.
     DB_SUFFIXES = ("", "-wal", "-shm", "-journal")
 
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, busy_timeout_ms=10000, init_lock_timeout=None):
         self.data_dir = Path(data_dir)
         self.db_path = str(self.data_dir / "reviews.db")
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._conn = None
+        if (isinstance(busy_timeout_ms, bool) or not isinstance(busy_timeout_ms, int)
+                or busy_timeout_ms < 1 or busy_timeout_ms > 10000):
+            raise StoreError("invalid SQLite busy timeout")
+        self.busy_timeout_ms = busy_timeout_ms
+        self.init_lock_timeout = init_lock_timeout
         ensure_private_dir(self.data_dir)
         # Serialize the whole bootstrap across processes and threads: the
         # pre-open sidefile checks, SQLite connect/mode setup, migrations,
@@ -290,7 +371,7 @@ class ReviewStore:
         # a concurrent close. The lock is held only here (and briefly in
         # close), never for normal long-lived operations. Lock order is
         # always init-lock outer, per-instance lock inner.
-        lock_fd = _acquire_init_lock(self.data_dir)
+        lock_fd = _acquire_init_lock(self.data_dir, init_lock_timeout)
         try:
             if os.path.islink(self.data_dir):
                 raise StoreError(
@@ -303,13 +384,13 @@ class ReviewStore:
             try:
                 self._conn = sqlite3.connect(
                     self.db_path, check_same_thread=False,
-                    isolation_level=None, timeout=10.0)
+                    isolation_level=None, timeout=busy_timeout_ms / 1000)
             except sqlite3.Error as exc:
                 raise StoreError(
                     f"cannot open database {self.db_path}: {exc}") from exc
             try:
                 self._conn.execute("PRAGMA journal_mode=WAL")
-                self._conn.execute("PRAGMA busy_timeout=10000")
+                self._conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
                 self._conn.execute("PRAGMA synchronous=NORMAL")
             except sqlite3.Error as exc:
                 try:
@@ -368,8 +449,14 @@ class ReviewStore:
             _secure_db_candidate(self.db_path + suffix)
 
     @classmethod
-    def open(cls, data_dir=None):
-        return cls(resolve_data_dir(data_dir))
+    def open(cls, data_dir=None, busy_timeout_ms=10000, init_lock_timeout=None):
+        return cls(resolve_data_dir(data_dir), busy_timeout_ms, init_lock_timeout)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
 
     def _secure_db_files(self):
         for suffix in self.DB_SUFFIXES:
@@ -384,8 +471,14 @@ class ReviewStore:
         # If the directory or lock is gone, still close the connection
         # rather than leaking it behind a lock error.
         try:
-            lock_fd = _acquire_init_lock(self.data_dir)
+            lock_fd = _acquire_init_lock(self.data_dir, self.init_lock_timeout)
         except StoreError:
+            if self.init_lock_timeout is not None:
+                with self._lock:
+                    if self._conn is not None:
+                        try: self._conn.close()
+                        finally: self._conn = None
+                raise
             lock_fd = None
         try:
             with self._lock:
@@ -552,6 +645,364 @@ class ReviewStore:
                 "SELECT * FROM jobs WHERE review_id = ?", (review_id,)).fetchone()
         return self._card_from_row(row)
 
+    # -- native runtime capture ---------------------------------------
+    def _runtime_salt(self):
+        row = self._conn.execute(
+            "SELECT value FROM runtime_metadata WHERE key = 'hmac_salt'").fetchone()
+        if row:
+            return bytes(row[0])
+        salt = secrets.token_bytes(32)
+        self._conn.execute(
+            "INSERT INTO runtime_metadata (key, value) VALUES ('hmac_salt', ?)",
+            (salt,))
+        return salt
+
+    @staticmethod
+    def _opaque(salt, domain, value):
+        return hmac.new(salt, (domain + "\0" + value).encode("utf-8"),
+                        hashlib.sha256).hexdigest()
+
+    def ensure_runtime_job(self, session_id, source="startup", model_slug=None,
+                           adapter_version="1"):
+        """Bind one native session to a sparse local review; raw ID is never stored."""
+        if not isinstance(session_id, str) or not session_id or len(session_id) > 512:
+            raise StoreError("native session identity is required")
+        if source not in {"startup", "resume", "compact", "clear", "fork"}:
+            raise StoreError("unsupported session source")
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                salt = self._runtime_salt()
+                native_key = self._opaque(salt, "codex-session", session_id)
+                row = self._conn.execute(
+                    "SELECT review_id, start_source FROM runtime_bindings"
+                    " WHERE runtime='codex' AND installation_key='local' AND native_chat_key=?",
+                    (native_key,)).fetchone()
+                if row:
+                    if source in {"clear", "fork"}:
+                        raise ConflictError("clear/fork continuity with a reused native ID is unsupported")
+                    blocked = self._conn.execute(
+                        "SELECT 1 FROM runtime_gaps WHERE review_id=?"
+                        " AND gap_key='identity_continuity_unsupported'", (row["review_id"],)).fetchone()
+                    if blocked:
+                        raise ConflictError("native identity continuity is unsupported after clear/fork")
+                    self._conn.execute(
+                        "UPDATE runtime_bindings SET last_seen_at=? WHERE runtime='codex'"
+                        " AND installation_key='local' AND native_chat_key=?",
+                        (now_iso(), native_key))
+                    self._conn.execute("COMMIT")
+                    return row["review_id"]
+                review_id = "apr-" + secrets.token_hex(16)
+                token = secrets.token_urlsafe(24)
+                now = now_iso()
+                snapshot = {"review_id": review_id, "job_type": "other",
+                            "task": "No task summary captured",
+                            "action": "Native lifecycle metadata captured automatically",
+                            "result": "unknown", "verification": "unknown",
+                            "context": {"runtime": "codex", "agent": "unknown",
+                                        "model": model_slug or "unknown",
+                                        "connections": "unknown", "loops": "unknown",
+                                        "roles": "unknown"},
+                            "resources": {"elapsed_time": "unknown", "tokens": "unknown",
+                                           "cost": "unknown", "tool_calls": "unknown"}}
+                self._conn.execute(
+                    "INSERT INTO jobs (review_id, job_token, snapshot, revision, status, updated_at)"
+                    " VALUES (?, ?, ?, 1, 'pending', ?)",
+                    (review_id, token, json.dumps(snapshot), now))
+                self._conn.execute(
+                    "INSERT INTO runtime_bindings (runtime, installation_key, native_chat_key,"
+                    " identity_source, review_id, first_seen_at, last_seen_at, start_source,"
+                    " adapter_version) VALUES ('codex','local',?,'native-session-id',?,?,?, ?,?)",
+                    (native_key, review_id, now, now, source, adapter_version))
+                self._conn.execute("COMMIT")
+                return review_id
+            except Exception:
+                try: self._conn.execute("ROLLBACK")
+                except sqlite3.Error: pass
+                raise
+
+    def ingest_runtime_event(self, session_id, event):
+        """Persist a validated, content-free observation idempotently."""
+        from review_schema import validate_runtime_event
+        event = validate_runtime_event(event)
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                salt = self._runtime_salt()
+                native_key = self._opaque(salt, "codex-session", session_id)
+                binding = self._conn.execute(
+                    "SELECT review_id FROM runtime_bindings WHERE runtime='codex'"
+                    " AND installation_key='local' AND native_chat_key=?", (native_key,)).fetchone()
+                if not binding:
+                    raise StoreError("session has no captured binding; start capture first")
+                review_id = binding["review_id"]
+                blocked = self._conn.execute(
+                    "SELECT 1 FROM runtime_gaps WHERE review_id=?"
+                    " AND gap_key='identity_continuity_unsupported'", (review_id,)).fetchone()
+                if blocked:
+                    raise ConflictError("native identity continuity is unsupported after clear/fork")
+                turn_key = self._opaque(salt, "codex-turn", event["turn_id"]) if event.get("turn_id") else None
+                tool_key = self._opaque(salt, "codex-tool", event["tool_use_id"]) if event.get("tool_use_id") else None
+                original_kind = event["kind"]
+                key_material = json.dumps([native_key, original_kind, event.get("turn_id"),
+                                           event.get("tool_use_id"), event.get("source")],
+                                          separators=(",", ":"), ensure_ascii=True)
+                event_key = self._opaque(salt, "codex-event", key_material)
+                if event["kind"] in {"tool_pre", "tool_post"}:
+                    root = (self._conn.execute(
+                        "SELECT 1 FROM runtime_turns WHERE review_id=? AND turn_key=?",
+                        (review_id, turn_key)).fetchone() if turn_key else None)
+                    if not root:
+                        event["kind"] = "unattributed_tool_" + event["kind"].split("_")[1]
+                        tool_key = None
+                now = event["observed_at_utc"]
+                cur = self._conn.execute(
+                    "INSERT OR IGNORE INTO runtime_events (event_key, review_id, turn_key, kind,"
+                    " observed_at_utc, observed_monotonic_ns, clock_epoch, model_slug,"
+                    " safe_tool_category, tool_key, source, adapter_version, schema_version)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)",
+                    (event_key, review_id, turn_key, event["kind"], now,
+                     event["observed_monotonic_ns"], event.get("clock_epoch"),
+                     event.get("model_slug"), event.get("safe_tool_category"), tool_key,
+                     event.get("source"), event["adapter_version"]))
+                if cur.rowcount:
+                    if event["kind"] == "turn_start" and turn_key:
+                        self._conn.execute(
+                            "INSERT OR IGNORE INTO runtime_turns (review_id, turn_key,"
+                            " first_observed_at, first_model, last_model, coverage)"
+                            " VALUES (?,?,?,?,?,'partial')",
+                            (review_id, turn_key, now, event.get("model_slug"), event.get("model_slug")))
+                    elif event["kind"] in {"turn_stopped", "turn_interrupted"} and turn_key:
+                        self._conn.execute(
+                            "UPDATE runtime_turns SET terminal_observed_at=COALESCE(terminal_observed_at,?),"
+                            " terminal_kind=COALESCE(terminal_kind,?), coverage='observed_terminal'"
+                            " WHERE review_id=? AND turn_key=?",
+                            (now, event["kind"], review_id, turn_key))
+                    elif event.get("model_slug") and turn_key:
+                        self._conn.execute(
+                            "UPDATE runtime_turns SET last_model=? WHERE review_id=? AND turn_key=?",
+                            (event["model_slug"], review_id, turn_key))
+                    self._conn.execute(
+                        "UPDATE jobs SET revision=revision+1, updated_at=?"
+                        " WHERE review_id=? AND status='pending'", (now, review_id))
+                self._conn.execute(
+                    "UPDATE runtime_bindings SET last_seen_at=? WHERE runtime='codex'"
+                    " AND installation_key='local' AND native_chat_key=?", (now, native_key))
+                self._conn.execute("COMMIT")
+                return {"review_id": review_id, "inserted": bool(cur.rowcount)}
+            except Exception:
+                try: self._conn.execute("ROLLBACK")
+                except sqlite3.Error: pass
+                raise
+
+    def runtime_review_projection(self, review_id):
+        with self._lock:
+            own_read_transaction = not self._conn.in_transaction
+            if own_read_transaction:
+                self._conn.execute("BEGIN")
+            try:
+                binding = self._conn.execute(
+                    "SELECT * FROM runtime_bindings WHERE review_id=?", (review_id,)).fetchone()
+                events = self._conn.execute(
+                    "SELECT * FROM runtime_events WHERE review_id=? ORDER BY observed_at_utc, event_key",
+                    (review_id,)).fetchall()
+                turns = self._conn.execute(
+                    "SELECT * FROM runtime_turns WHERE review_id=? ORDER BY first_observed_at",
+                    (review_id,)).fetchall()
+                tool_count = self._conn.execute(
+                    "SELECT COUNT(DISTINCT tool_key) FROM runtime_events WHERE review_id=?"
+                    " AND kind='tool_pre' AND tool_key IS NOT NULL", (review_id,)).fetchone()[0]
+                category_rows = self._conn.execute(
+                    "SELECT safe_tool_category,COUNT(DISTINCT tool_key) AS count"
+                    " FROM runtime_events WHERE review_id=? AND kind='tool_pre'"
+                    " AND tool_key IS NOT NULL GROUP BY safe_tool_category", (review_id,)).fetchall()
+                saved = self._conn.execute(
+                    "SELECT saved_at FROM jobs WHERE review_id=?", (review_id,)).fetchone()[0]
+                event_count = self._conn.execute(
+                    "SELECT COUNT(*) FROM runtime_events WHERE review_id=?", (review_id,)).fetchone()[0]
+                rated_count_row = self._conn.execute(
+                    "SELECT event_count,projection_json FROM runtime_rating_evidence WHERE review_id=?",
+                    (review_id,)).fetchone()
+                rated_event_count = rated_count_row[0] if rated_count_row else None
+                stored_gaps = self._conn.execute(
+                    "SELECT gap_key,count,last_seen_at FROM runtime_gaps WHERE review_id=?",
+                    (review_id,)).fetchall()
+                if own_read_transaction:
+                    self._conn.execute("COMMIT")
+            except Exception:
+                if own_read_transaction:
+                    try: self._conn.execute("ROLLBACK")
+                    except sqlite3.Error: pass
+                raise
+        if not binding:
+            return None
+        clock_anomaly = False
+        observed = [e["observed_at_utc"] for e in events]
+        observed_instants = []
+        for value in observed:
+            try:
+                observed_instants.append((datetime.fromisoformat(value), value))
+            except ValueError:
+                clock_anomaly = True
+        first_observed = min(observed_instants)[1] if observed_instants else None
+        last_observed = max(observed_instants)[1] if observed_instants else None
+        durations = []
+        projected_turns = []
+        for turn in turns:
+            duration = None
+            if turn["first_observed_at"] and turn["terminal_observed_at"]:
+                try:
+                    delta = (datetime.fromisoformat(turn["terminal_observed_at"]) -
+                             datetime.fromisoformat(turn["first_observed_at"])).total_seconds()
+                    if delta >= 0:
+                        duration = delta
+                        durations.append(delta)
+                    else:
+                        clock_anomaly = True
+                except ValueError:
+                    pass
+            projected_turns.append({"elapsed_seconds": duration,
+                                    "terminal_kind": turn["terminal_kind"],
+                                    "coverage": turn["coverage"]})
+        gaps = []
+        if binding["start_source"] != "startup": gaps.append("late_start")
+        if tool_count: gaps.append("subagent_attribution_unverified")
+        if any(t["coverage"] != "observed_terminal" for t in turns): gaps.append("incomplete_turn")
+        if any(e["kind"].startswith("unattributed_tool") for e in events): gaps.append("unattributed_tool_events")
+        pre_ids = {e["tool_key"] for e in events if e["kind"] == "tool_pre" and e["tool_key"]}
+        post_ids = {e["tool_key"] for e in events if e["kind"] == "tool_post" and e["tool_key"]}
+        if pre_ids - post_ids: gaps.append("missing_tool_post")
+        if post_ids - pre_ids: gaps.append("missing_tool_pre")
+        tool_spans = []
+        tool_events = {}
+        for event in events:
+            if event["tool_key"]:
+                tool_events.setdefault(event["tool_key"], {})[event["kind"]] = event["observed_at_utc"]
+        for phases in tool_events.values():
+            if "tool_pre" not in phases or "tool_post" not in phases:
+                continue
+            try:
+                span = (datetime.fromisoformat(phases["tool_post"]) -
+                        datetime.fromisoformat(phases["tool_pre"])).total_seconds()
+                if span >= 0:
+                    tool_spans.append(span)
+                else:
+                    clock_anomaly = True
+            except ValueError:
+                clock_anomaly = True
+        turn_keys = {t["turn_key"] for t in turns}
+        turn_map = {t["turn_key"]: t for t in turns}
+        if any(e["kind"] in {"turn_stopped", "turn_interrupted"} and
+               (e["turn_key"] not in turn_map or
+                not turn_map[e["turn_key"]]["terminal_observed_at"])
+               for e in events):
+            gaps.append("terminal_without_observed_start")
+        gap_watermark = {row["gap_key"]: {"count": row["count"],
+                                           "last_seen_at": row["last_seen_at"]}
+                         for row in stored_gaps}
+        gaps.extend(gap_watermark)
+        try:
+            chat_wall = ((max(observed_instants)[0] - min(observed_instants)[0]).total_seconds()
+                         if len(observed_instants) > 1 else 0)
+            if chat_wall < 0:
+                chat_wall = None
+                clock_anomaly = True
+        except ValueError:
+            chat_wall = None
+        if clock_anomaly and "clock_anomaly" not in gaps: gaps.append("clock_anomaly")
+        after_rating_count = (max(0, event_count - rated_event_count)
+                              if saved is not None and rated_event_count is not None else 0)
+        has_rating_watermark = saved is not None and rated_count_row is not None
+        rated_projection = (json.loads(rated_count_row["projection_json"])
+                            if has_rating_watermark else {})
+        rated_gaps = rated_projection.get("gap_watermark", {})
+        post_rating_gap_keys = (sorted(
+            key for key, value in gap_watermark.items()
+            if (key not in rated_gaps or value["count"] != rated_gaps[key].get("count")
+                or value["last_seen_at"] != rated_gaps[key].get("last_seen_at")))
+            if has_rating_watermark else [])
+        after_rating_gap_count = sum(
+            max(0, value["count"] - rated_gaps.get(key, {}).get("count", 0))
+            for key, value in gap_watermark.items() if key in post_rating_gap_keys)
+        after_rating = (last_observed if after_rating_count else None)
+        if post_rating_gap_keys:
+            gap_times = [gap_watermark[key]["last_seen_at"] for key in post_rating_gap_keys]
+            after_rating = max([v for v in [after_rating, *gap_times] if v])
+        return {"runtime": "codex", "capture_started_at": binding["first_seen_at"],
+                "first_observed_at": first_observed,
+                "last_observed_at": last_observed,
+                "start_source": binding["start_source"], "adapter_version": binding["adapter_version"],
+                "observed_turn_count": len(turns), "open_turn_count": sum(
+                    1 for t in turns if not t["terminal_observed_at"]),
+                "event_count": event_count,
+                "post_rating_event_count": after_rating_count,
+                "post_rating_gap_count": after_rating_gap_count,
+                "post_rating_gap_keys": post_rating_gap_keys,
+                "gap_watermark": gap_watermark,
+                "tool_call_count": tool_count,
+                "tool_categories": {row["safe_tool_category"]: row["count"]
+                                    for row in category_rows if row["safe_tool_category"]},
+                "turn_elapsed_seconds": durations,
+                "tool_elapsed_seconds": tool_spans,
+                "turns": projected_turns,
+                "observed_turn_elapsed_seconds_total": sum(durations),
+                "chat_wall_seconds": chat_wall,
+                "elapsed_basis": "UTC hook receipt wall time; monotonic epoch unavailable",
+                "models": sorted({e["model_slug"] for e in events
+                                  if e["model_slug"] and e["kind"] == "turn_start"}),
+                "tokens": "unknown", "cost": "unknown",
+                "coverage": "partial", "coverage_gaps": sorted(set(gaps)),
+                "evidence_after_rating": after_rating}
+
+    def mark_runtime_gap(self, session_id, gap_key="capture_error"):
+        """Record only a bounded failure class against a known native binding."""
+        if gap_key not in {"capture_error", "identity_continuity_unsupported",
+                           "missing_tool_identity", "missing_turn_identity",
+                           "lifecycle_occurrence_unverifiable"}:
+            gap_key = "capture_error"
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                salt = self._runtime_salt()
+                native_key = self._opaque(salt, "codex-session", session_id)
+                row = self._conn.execute(
+                    "SELECT review_id FROM runtime_bindings WHERE runtime='codex'"
+                    " AND installation_key='local' AND native_chat_key=?", (native_key,)).fetchone()
+                if row:
+                    self._conn.execute(
+                        "UPDATE jobs SET revision=revision+1, updated_at=?"
+                        " WHERE review_id=? AND status='pending'",
+                        (now_iso(), row[0]))
+                    self._conn.execute(
+                        "INSERT INTO runtime_gaps (review_id,gap_key,count,last_seen_at)"
+                        " VALUES (?,?,1,?) ON CONFLICT(review_id,gap_key) DO UPDATE SET"
+                        " count=count+1,last_seen_at=excluded.last_seen_at",
+                        (row[0], gap_key, now_iso()))
+                self._conn.execute("COMMIT")
+                return bool(row)
+            except Exception:
+                try: self._conn.execute("ROLLBACK")
+                except sqlite3.Error: pass
+                raise
+
+    def runtime_rating_projection(self, review_id):
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT captured_at,event_count,projection_json"
+                " FROM runtime_rating_evidence WHERE review_id=?", (review_id,)).fetchone()
+        if not row:
+            return None
+        return {"captured_at": row["captured_at"], "event_count": row["event_count"],
+                "projection": json.loads(row["projection_json"])}
+
+    def list_runtime_reviews(self):
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT b.review_id, b.first_seen_at, b.last_seen_at, b.start_source, j.job_token"
+                " FROM runtime_bindings b JOIN jobs j USING (review_id)"
+                " ORDER BY b.last_seen_at DESC").fetchall()
+        return [dict(r) for r in rows]
+
     # -- ratings --------------------------------------------------------
     def save_rating(self, full, expected_revision=None):
         with self._lock:
@@ -591,6 +1042,16 @@ class ReviewStore:
                 recorded_at = full.get("recorded_at") or now_iso()
                 saved_full = dict(full)
                 saved_full.pop("recorded_at", None)
+                projection = self.runtime_review_projection(full["review_id"])
+                if projection is not None:
+                    event_count = self._conn.execute(
+                        "SELECT COUNT(*) FROM runtime_events WHERE review_id=?",
+                        (full["review_id"],)).fetchone()[0]
+                    self._conn.execute(
+                        "INSERT OR REPLACE INTO runtime_rating_evidence"
+                        " (review_id,captured_at,event_count,projection_json) VALUES (?,?,?,?)",
+                        (full["review_id"], recorded_at, event_count,
+                         json.dumps(projection, ensure_ascii=False)))
                 self._conn.execute(
                     "UPDATE jobs SET status = 'saved', saved_snapshot = ?,"
                     " saved_full = ?, saved_at = ?, updated_at = ?"

@@ -50,6 +50,19 @@
       </details>
     </section>
 
+    <section id="runtime-evidence" class="summary" aria-label="Observed Codex runtime evidence" hidden>
+      <h2>Observed Codex activity</h2>
+      <dl>
+        <div><dt>Capture</dt><dd id="capture-coverage"></dd></div>
+        <div><dt>Turns</dt><dd id="capture-turns"></dd></div>
+        <div><dt>Tools</dt><dd id="capture-tools"></dd></div>
+        <div><dt>Observed timing</dt><dd id="capture-timing"></dd></div>
+        <div><dt>Models</dt><dd id="capture-models"></dd></div>
+      </dl>
+      <p id="capture-gaps"></p>
+      <p id="rating-watermark" hidden></p>
+    </section>
+
     <section id="saved-block" class="saved-block" hidden aria-label="Saved rating">
       <h2>Already saved</h2>
       <p id="saved-detail"></p>
@@ -129,7 +142,7 @@
     <div id="confirmation" class="confirmation" role="status" aria-live="polite" hidden></div>
 
     <footer class="privacy">
-      <p id="privacy-copy">Nothing here is published or uploaded. Save locally stores your ratings on this computer only; Skip review discards your selections without saving anything. The summary and context above were supplied by the calling tool, not captured automatically — missing numbers stay unavailable.</p>
+      <p id="privacy-copy">Nothing here is published or uploaded. Save locally stores your ratings on this computer only; Skip review discards your selections without saving anything. The review summary and context may be supplied by the calling tool. Any observed Codex activity is shown separately and comes only from opted-in local hook receipts; prompts and tool contents are not captured. Token totals and cost remain unavailable.</p>
     </footer>
   </main>
 
