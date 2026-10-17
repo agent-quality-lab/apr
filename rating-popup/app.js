@@ -19,6 +19,50 @@
   var confirmation = document.getElementById("confirmation");
   var ratingsHint = document.getElementById("ratings-hint");
 
+  // Preview privacy on hover/focus; clicking pins it open until dismissed.
+  var privacyDetails = document.querySelector(".privacy-details");
+  var privacyPinned = false;
+  var privacyHovered = false;
+  var privacyFocused = false;
+  var privacyDismissed = false;
+
+  function updatePrivacy() {
+    privacyDetails.open = privacyPinned ||
+      (!privacyDismissed && (privacyHovered || privacyFocused));
+  }
+
+  privacyDetails.addEventListener("pointerenter", function (event) {
+    if (event.pointerType !== "mouse") return;
+    privacyHovered = true;
+    privacyDismissed = false;
+    updatePrivacy();
+  });
+  privacyDetails.addEventListener("pointerleave", function () {
+    privacyHovered = false;
+    updatePrivacy();
+  });
+  privacyDetails.addEventListener("focusin", function () {
+    privacyFocused = true;
+    privacyDismissed = false;
+    updatePrivacy();
+  });
+  privacyDetails.addEventListener("focusout", function (event) {
+    privacyFocused = privacyDetails.contains(event.relatedTarget);
+    updatePrivacy();
+  });
+  privacyDetails.querySelector("summary").addEventListener("click", function (event) {
+    event.preventDefault();
+    privacyPinned = !privacyPinned;
+    privacyDismissed = !privacyPinned;
+    updatePrivacy();
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape" || !privacyDetails.open) return;
+    privacyPinned = false;
+    privacyDismissed = true;
+    updatePrivacy();
+  });
+
   function setBinary(value) {
     finished = value;
     if (value === true) {
