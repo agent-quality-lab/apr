@@ -156,6 +156,20 @@ summary {
   font-weight: 600;
 }
 
+.runtime-details {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.runtime-details > summary {
+  padding: 12px 0;
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.runtime-details[open] { padding-bottom: 14px; }
+
 .details-hint {
   margin-left: 6px;
   color: var(--muted);
@@ -166,9 +180,7 @@ summary {
 .run-details[open] { padding-bottom: 14px; }
 
 .runtime-evidence {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
+  margin-top: 10px;
 }
 
 .runtime-evidence h3 {

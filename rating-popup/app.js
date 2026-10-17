@@ -25,43 +25,48 @@
   var privacyHovered = false;
   var privacyFocused = false;
   var privacyDismissed = false;
+  var privacySummary = privacyDetails && privacyDetails.querySelector("summary");
 
-  function updatePrivacy() {
-    privacyDetails.open = privacyPinned ||
-      (!privacyDismissed && (privacyHovered || privacyFocused));
+  if (privacyDetails && privacySummary) {
+    function updatePrivacy() {
+      privacyDetails.open = privacyPinned ||
+        (!privacyDismissed && (privacyHovered || privacyFocused));
+    }
+
+    privacyDetails.addEventListener("pointerenter", function (event) {
+      if (event.pointerType !== "mouse") return;
+      privacyHovered = true;
+      privacyDismissed = false;
+      updatePrivacy();
+    });
+    privacyDetails.addEventListener("pointerleave", function () {
+      privacyHovered = false;
+      updatePrivacy();
+    });
+    privacyDetails.addEventListener("focusin", function () {
+      privacyFocused = true;
+      privacyDismissed = false;
+      updatePrivacy();
+    });
+    privacyDetails.addEventListener("focusout", function (event) {
+      privacyFocused = privacyDetails.contains(event.relatedTarget);
+      updatePrivacy();
+    });
+    privacySummary.addEventListener("click", function (event) {
+      event.preventDefault();
+      privacyPinned = !privacyPinned;
+      privacyDismissed = !privacyPinned;
+      updatePrivacy();
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key !== "Escape" || !privacyDetails.open ||
+          !privacyDetails.contains(document.activeElement)) return;
+      privacyPinned = false;
+      privacySummary.focus();
+      privacyDismissed = true;
+      updatePrivacy();
+    });
   }
-
-  privacyDetails.addEventListener("pointerenter", function (event) {
-    if (event.pointerType !== "mouse") return;
-    privacyHovered = true;
-    privacyDismissed = false;
-    updatePrivacy();
-  });
-  privacyDetails.addEventListener("pointerleave", function () {
-    privacyHovered = false;
-    updatePrivacy();
-  });
-  privacyDetails.addEventListener("focusin", function () {
-    privacyFocused = true;
-    privacyDismissed = false;
-    updatePrivacy();
-  });
-  privacyDetails.addEventListener("focusout", function (event) {
-    privacyFocused = privacyDetails.contains(event.relatedTarget);
-    updatePrivacy();
-  });
-  privacyDetails.querySelector("summary").addEventListener("click", function (event) {
-    event.preventDefault();
-    privacyPinned = !privacyPinned;
-    privacyDismissed = !privacyPinned;
-    updatePrivacy();
-  });
-  document.addEventListener("keydown", function (event) {
-    if (event.key !== "Escape" || !privacyDetails.open) return;
-    privacyPinned = false;
-    privacyDismissed = true;
-    updatePrivacy();
-  });
 
   function setBinary(value) {
     finished = value;
@@ -324,8 +329,14 @@
   }
 
   function updateRuntimeEvidence(evidence, frozen) {
+    var disclosure = document.getElementById("runtime-details");
     var section = document.getElementById("runtime-evidence");
-    if (!evidence) { section.hidden = true; return; }
+    if (!evidence) {
+      disclosure.hidden = true;
+      section.hidden = true;
+      return;
+    }
+    disclosure.hidden = false;
     section.hidden = false;
     document.getElementById("capture-coverage").textContent =
       "Codex local hook receipts · " + evidence.coverage + " · started " + readable(evidence.capture_started_at) +
