@@ -19,6 +19,55 @@
   var confirmation = document.getElementById("confirmation");
   var ratingsHint = document.getElementById("ratings-hint");
 
+  // Preview privacy on hover/focus; clicking pins it open until dismissed.
+  var privacyDetails = document.querySelector(".privacy-details");
+  var privacyPinned = false;
+  var privacyHovered = false;
+  var privacyFocused = false;
+  var privacyDismissed = false;
+  var privacySummary = privacyDetails && privacyDetails.querySelector("summary");
+
+  if (privacyDetails && privacySummary) {
+    function updatePrivacy() {
+      privacyDetails.open = privacyPinned ||
+        (!privacyDismissed && (privacyHovered || privacyFocused));
+    }
+
+    privacyDetails.addEventListener("pointerenter", function (event) {
+      if (event.pointerType !== "mouse") return;
+      privacyHovered = true;
+      privacyDismissed = false;
+      updatePrivacy();
+    });
+    privacyDetails.addEventListener("pointerleave", function () {
+      privacyHovered = false;
+      updatePrivacy();
+    });
+    privacyDetails.addEventListener("focusin", function () {
+      privacyFocused = true;
+      privacyDismissed = false;
+      updatePrivacy();
+    });
+    privacyDetails.addEventListener("focusout", function (event) {
+      privacyFocused = privacyDetails.contains(event.relatedTarget);
+      updatePrivacy();
+    });
+    privacySummary.addEventListener("click", function (event) {
+      event.preventDefault();
+      privacyPinned = !privacyPinned;
+      privacyDismissed = !privacyPinned;
+      updatePrivacy();
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key !== "Escape" || !privacyDetails.open ||
+          !privacyDetails.contains(document.activeElement)) return;
+      privacyPinned = false;
+      privacySummary.focus();
+      privacyDismissed = true;
+      updatePrivacy();
+    });
+  }
+
   function setBinary(value) {
     finished = value;
     if (value === true) {
@@ -280,8 +329,14 @@
   }
 
   function updateRuntimeEvidence(evidence, frozen) {
+    var disclosure = document.getElementById("runtime-details");
     var section = document.getElementById("runtime-evidence");
-    if (!evidence) { section.hidden = true; return; }
+    if (!evidence) {
+      disclosure.hidden = true;
+      section.hidden = true;
+      return;
+    }
+    disclosure.hidden = false;
     section.hidden = false;
     document.getElementById("capture-coverage").textContent =
       "Codex local hook receipts · " + evidence.coverage + " · started " + readable(evidence.capture_started_at) +

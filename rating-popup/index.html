@@ -3,22 +3,23 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Rate Your Agent</title>
+  <title>Review this run</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <main class="popup" aria-labelledby="popup-title">
     <header class="popup-header">
       <div>
-        <h1 id="popup-title">Rate your agent</h1>
-        <p class="subtitle">Quick post-run check · about 15 seconds · stored only on this computer</p>
+        <p class="eyebrow">Agent performance review</p>
+        <h1 id="popup-title">Review this run</h1>
+        <p class="subtitle">A quick check on the outcome. About 15 seconds.</p>
       </div>
       <span id="sample-badge" class="sample-badge" hidden>Sample data</span>
     </header>
 
     <section id="run-summary" class="summary" aria-label="Task and result summary">
       <h2 id="summary-heading">Loading run summary…</h2>
-      <dl>
+      <dl class="run-overview">
         <div>
           <dt>Task</dt>
           <dd id="summary-task">Loading…</dd>
@@ -27,40 +28,33 @@
           <dt>Result</dt>
           <dd id="summary-result">Loading…</dd>
         </div>
-        <div>
-          <dt>Model</dt>
-          <dd id="summary-model">Loading…</dd>
-        </div>
-        <div>
-          <dt>Tools</dt>
-          <dd id="summary-tools">Loading…</dd>
-        </div>
-        <div>
-          <dt>Usage</dt>
-          <dd id="summary-usage">Loading…</dd>
-        </div>
       </dl>
-      <details>
-        <summary>Show action and resources</summary>
+      <details class="run-details">
+        <summary>Run details <span class="details-hint">Model, tools &amp; resources</span></summary>
         <dl>
+          <div><dt>Model</dt><dd id="summary-model">Loading…</dd></div>
+          <div><dt>Tools</dt><dd id="summary-tools">Loading…</dd></div>
+          <div><dt>Usage</dt><dd id="summary-usage">Loading…</dd></div>
           <div><dt>Action</dt><dd id="summary-action">Loading…</dd></div>
           <div><dt>Context</dt><dd id="summary-context">Loading…</dd></div>
           <div><dt>Resources</dt><dd id="summary-resources">Loading…</dd></div>
         </dl>
       </details>
-    </section>
-
-    <section id="runtime-evidence" class="summary" aria-label="Observed Codex runtime evidence" hidden>
-      <h2>Observed Codex activity</h2>
-      <dl>
-        <div><dt>Capture</dt><dd id="capture-coverage"></dd></div>
-        <div><dt>Turns</dt><dd id="capture-turns"></dd></div>
-        <div><dt>Tools</dt><dd id="capture-tools"></dd></div>
-        <div><dt>Observed timing</dt><dd id="capture-timing"></dd></div>
-        <div><dt>Models</dt><dd id="capture-models"></dd></div>
-      </dl>
-      <p id="capture-gaps"></p>
-      <p id="rating-watermark" hidden></p>
+      <details id="runtime-details" class="runtime-details" hidden>
+        <summary>Observed Codex activity</summary>
+        <section id="runtime-evidence" class="runtime-evidence" aria-labelledby="runtime-heading" hidden>
+          <h3 id="runtime-heading">Observed activity details</h3>
+          <dl>
+            <div><dt>Capture</dt><dd id="capture-coverage"></dd></div>
+            <div><dt>Turns</dt><dd id="capture-turns"></dd></div>
+            <div><dt>Tools</dt><dd id="capture-tools"></dd></div>
+            <div><dt>Observed timing</dt><dd id="capture-timing"></dd></div>
+            <div><dt>Models</dt><dd id="capture-models"></dd></div>
+          </dl>
+          <p id="capture-gaps"></p>
+          <p id="rating-watermark" hidden></p>
+        </section>
+      </details>
     </section>
 
     <section id="saved-block" class="saved-block" hidden aria-label="Saved rating">
@@ -142,7 +136,10 @@
     <div id="confirmation" class="confirmation" role="status" aria-live="polite" hidden></div>
 
     <footer class="privacy">
-      <p id="privacy-copy">Nothing here is published or uploaded. Save locally stores your ratings on this computer only; Skip review discards your selections without saving anything. The review summary and context may be supplied by the calling tool. Any observed Codex activity is shown separately and comes only from opted-in local hook receipts; prompts and tool contents are not captured. Token totals and cost remain unavailable.</p>
+      <details class="privacy-details">
+        <summary><span class="info-icon" aria-hidden="true">i</span> Privacy &amp; storage</summary>
+        <p id="privacy-copy">Nothing here is published or uploaded. Save locally stores your ratings only on this computer. Skip review discards your selections without saving anything. The calling tool may supply the review summary and context. Any observed Codex activity is shown separately and comes only from opted-in local hook receipts. Prompts and tool contents are not captured. Token totals and cost remain unavailable.</p>
+      </details>
     </footer>
   </main>
 
