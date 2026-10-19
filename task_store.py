@@ -488,6 +488,10 @@ _COMMUNITY_ALLOWED_TOKEN_KEYS = {
 
 def _is_community_private_key(key):
     compact = re.sub(r"[^a-z0-9]", "", key.lower())
+    # Runtime/service authentication handles are local identifiers even though
+    # the public validator's generic predicate does not classify these names.
+    if compact.startswith(("serviceauth", "runtimeauth")):
+        return True
     if _COMMUNITY_PRIVATE_KEY_BOUNDARY.search(key):
         return True
     if (_COMMUNITY_PRIVATE_KEY_COMPACT.search(compact)
