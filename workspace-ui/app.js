@@ -137,12 +137,74 @@
     if (!input) return 'Date unavailable';
     const date = new Date(input); return Number.isNaN(date.valueOf()) ? 'Date unavailable' : date.toLocaleString();
   }
-  function resourceMetric(task, key) {
+  function formatNumber(value) {
+    return new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(value);
+  }
+  function formatDuration(value, unit) {
+    const normalized = String(unit || '').toLowerCase();
+    let seconds = value;
+    if (['ms', 'millisecond', 'milliseconds'].includes(normalized)) seconds = value / 1000;
+    else if (['m', 'min', 'minute', 'minutes'].includes(normalized)) seconds = value * 60;
+    else if (['h', 'hr', 'hour', 'hours'].includes(normalized)) seconds = value * 3600;
+    else if (['d', 'day', 'days'].includes(normalized)) seconds = value * 86400;
+    if (seconds >= 86400) { const days = seconds / 86400; return `${formatNumber(days)} ${days === 1 ? 'day' : 'days'}`; }
+    if (seconds >= 3600) { const hours = seconds / 3600; return `${formatNumber(hours)} ${hours === 1 ? 'hour' : 'hours'}`; }
+    if (seconds >= 60) { const minutes = seconds / 60; return `${formatNumber(minutes)} min`; }
+    return `${formatNumber(seconds)} sec`;
+  }
+  function formatResourceValue(key, metric) {
+    if (!metric || typeof metric !== 'object' || typeof metric.value !== 'number' || !Number.isFinite(metric.value) || metric.value < 0 || typeof metric.unit !== 'string' || !metric.unit.trim()) return null;
+    const unit = metric.unit.trim(); const normalized = unit.toLowerCase();
+    if (key === 'elapsed_time') return formatDuration(metric.value, unit);
+    if (key === 'cost' && normalized === 'usd') {
+      return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 4 }).format(metric.value);
+    }
+    if (key === 'cost' && /^[A-Za-z]{3}$/.test(unit)) {
+      try { return new Intl.NumberFormat(undefined, { style: 'currency', currency: unit.toUpperCase(), minimumFractionDigits: 0, maximumFractionDigits: 4 }).format(metric.value); }
+      catch (_) { return `${unit.toUpperCase()} ${formatNumber(metric.value)}`; }
+    }
+    return `${formatNumber(metric.value)}${unit ? ` ${unit}` : ''}`;
+  }
+  function resourceRecords(task, key) {
     const resources = task?.resources;
+    if (Array.isArray(resources)) return resources.filter(record => record?.name === key).map(record => ({
+      value: formatResourceValue(key, { value: record.value, unit: record.unit || '' }), source: record.source
+    })).filter(record => record.value !== null);
     const records = resources && typeof resources === 'object' ? Object.values(resources) : [];
-    const values = records.map(record => record && typeof record === 'object' ? record[key] : undefined)
-      .filter(value => value !== undefined && value !== null && value !== '' && value !== 'unknown');
-    return values.length ? values.map(safeText).join(' · ') : 'Not measured';
+    return records.map(record => ({ value: formatResourceValue(key, record?.[key]), source: record?.source }))
+      .filter(record => record.value !== null);
+  }
+  function resourceMetric(task, key) {
+    const readings = resourceRecords(task, key);
+    return readings.length ? readings.map(reading => reading.value).join(' · ') : 'Not measured';
+  }
+  function renderResourceSection(task) {
+    const body = node('div', 'resource-list');
+    [['elapsed_time', 'Elapsed time'], ['cost', 'Cost'], ['tokens', 'Tokens'], ['tool_calls', 'Tool calls']].forEach(([key, label]) => {
+      const row = node('div', 'resource-row'); add(row, node('strong', '', label));
+      const readings = resourceRecords(task, key);
+      const values = node('div', 'resource-readings');
+      if (!readings.length) add(values, node('span', 'muted small', 'Not measured'));
+      readings.forEach(reading => {
+        const item = node('div', 'resource-reading'); add(item, node('span', '', reading.value)); item.append(sourceBadge(reading.source)); values.append(item);
+      });
+      row.append(values); body.append(row);
+    });
+    return body;
+  }
+  function renderPerformance(task) {
+    const body = node('div'); const review = task?.review;
+    const outcome = node('div', 'performance-outcome');
+    add(outcome, node('strong', '', 'Human outcome'));
+    add(outcome, node('span', '', review?.completion === 'yes' ? 'Completed' : review?.completion === 'no' ? 'Not completed' : 'Not reviewed'));
+    outcome.append(sourceBadge(review ? 'user-stated' : undefined)); body.append(outcome);
+    const ratings = node('div', 'saved-ratings');
+    [['overall', 'Overall'], ['quality', 'Quality'], ['speed', 'Speed'], ['resource_efficiency', 'Resource efficiency']].forEach(([key, label]) => {
+      const value = review?.ratings?.[key]; const item = node('div', 'saved-rating'); add(item, node('span', '', label));
+      add(item, node('strong', '', Number.isInteger(value) && value >= 1 && value <= 5 ? `${value} / 5` : 'Not rated')); ratings.append(item);
+    }); body.append(ratings);
+    const resourceHeading = node('h3', 'performance-subhead', 'Recorded resources'); body.append(resourceHeading, renderResourceSection(task));
+    return section('Performance record', body);
   }
 
   async function loadWork() {
@@ -160,7 +222,7 @@
   function renderWork() {
     app.replaceChildren();
     const total = state.tasks.length;
-    const active = state.tasks.filter(t => ['in_progress', 'interrupted'].includes(t?.status)).length;
+    const active = state.tasks.filter(t => t?.status === 'in_progress').length;
     const review = state.tasks.filter(t => ['awaiting_review', 'interrupted'].includes(t?.status)).length;
     const hero = node('div', 'hero'); const copy = node('div', 'hero-copy');
     add(copy, node('p', 'eyebrow', 'Your local workspace'));
@@ -183,11 +245,12 @@
       if (!task || typeof task !== 'object') return;
       const a = node('a', 'task-card'); a.href = `#task=${encodeURIComponent(String(task.task_id || ''))}`;
       const details = node('div'); add(details, node('h3', '', safeText(task.title || 'Untitled task')));
-      add(details, node('p', '', safeText(task.goal || 'Goal not recorded')));
+      if (task.goal) add(details, node('p', '', safeText(task.goal)));
       const meta = node('div', 'task-meta');
       if (task.category) add(meta, badge(safeText(task.category)));
       if (task.runtime) add(meta, badge(safeText(task.runtime)));
-      add(meta, badge(`${Array.isArray(task.evidence) ? task.evidence.length : 0} evidence items`)); details.append(meta);
+      const evidenceCount = Number.isInteger(task.evidence_count) ? task.evidence_count : Array.isArray(task.evidence) ? task.evidence.length : 0;
+      add(meta, badge(`${evidenceCount} evidence items`)); details.append(meta);
       const metrics = node('div', 'task-metrics');
       [
         ['Model', task.model || 'Not recorded'],
@@ -227,12 +290,19 @@
     const modes = node('fieldset', 'form-row'); modes.style.border = '0'; modes.style.padding = '0'; modes.style.margin = '0 0 18px';
     add(modes, node('legend', 'field-label', 'Who is this setup for?'));
     const choices = node('div', 'choice-row');
-    [['existing', 'Existing harness', 'I have a named harness or agent setup.'], ['newcomer', 'New to agent harnesses', 'Start with the runtime and capabilities you know.']].forEach(([v, title, desc]) => {
+    [['existing', 'Existing harness', 'Record work from a harness you already use.'], ['newcomer', 'New to agent harnesses', 'Use the same task record format without assuming a harness exists.']].forEach(([v, title, desc]) => {
       const label = node('label', 'choice-card'); const radio = node('input'); radio.type = 'radio'; radio.name = 'mode'; radio.value = v; radio.checked = setup.mode === v || (!setup.mode && v === 'newcomer');
       const text = node('span'); add(text, node('strong', '', title)); add(text, node('small', '', desc)); label.append(radio, text); choices.append(label);
     }); modes.append(choices); form.append(modes);
     const runtime = formField('Agent runtime', 'runtime', setup.runtime || '', 'For example, Codex, Claude Code, or a team-specific runtime.');
+    runtime.input.required = true; runtime.input.maxLength = 512;
     form.append(runtime.wrap);
+    const installNote = node('div', 'notice');
+    add(installNote, node('p', '', 'Saving these preferences labels this recording workspace. It does not install or connect an MCP server or set up an execution harness.'));
+    const command = node('code', 'setup-command', 'codex mcp add agent-performance-review -- python3 <checkout>/mcp_server.py');
+    add(installNote, node('p', 'small', 'To connect manually, follow the operator guide and replace <checkout> with your local repository path.'));
+    const guide = node('a', 'text-button', 'Open the operator guide'); guide.href = 'https://agentperformance.review/docs/#installation'; guide.target = '_blank'; guide.rel = 'noopener noreferrer'; installNote.append(guide);
+    installNote.append(document.createTextNode(' '), command); form.append(installNote);
     const capabilityBlock = node('div', 'content-block'); add(capabilityBlock, node('h3', '', 'Service capabilities · read only'));
     const capabilityList = node('dl', 'capability-list');
     const known = setup.capabilities && typeof setup.capabilities === 'object' ? Object.entries(setup.capabilities) : [];
@@ -278,16 +348,9 @@
       const n = node('div', 'notice'); add(n, node('strong', '', 'This task was interrupted.'));
       add(n, node('span', '', ' Review what was captured so far. A missing result is recorded as missing, not treated as a failure.')); app.append(n);
     }
-    if (task.baseline_missing) { const n = node('div', 'notice', 'No baseline task was recorded for this run.'); app.append(n); }
-    const beforeAfter = node('div', 'before-after');
-    const before = node('section', 'ba-card before'); add(before, node('h2', '', 'Intended work'));
-    add(before, node('p', '', safeText(task.goal || 'Goal not recorded')));
-    const after = node('section', 'ba-card after'); add(after, node('h2', '', 'Recorded result'));
-    add(after, node('p', '', safeText(task.result || 'No result recorded')));
-    beforeAfter.append(before, after); app.append(beforeAfter);
+    app.append(renderBeforeAfter(task));
     const columns = node('div', 'split'); const main = node('div'); const side = node('aside');
-    const goalBox = node('div'); goalBox.append(valueBlock('Goal', task.goal)); const criteria = node('div', 'content-block'); fillList(criteria, 'Success criteria', task.success_criteria); goalBox.append(criteria);
-    main.append(section('Task brief', goalBox));
+    main.append(renderTaskBrief(task), renderPerformance(task));
     const details = node('section', 'panel'); add(details, node('h2', '', 'What shaped this run'));
     const groups = [
       ['Setup', ['mode', 'name', 'version', 'roles', 'loops', 'rules', 'tools', 'context_categories', 'definitions']],
@@ -308,6 +371,12 @@
       }
       d.append(body); details.append(d);
     }); main.append(details);
+    const afterReview = Array.isArray(task.post_review_evidence) ? task.post_review_evidence : [];
+    if (afterReview.length) {
+      const body = node('div'); add(body, node('p', 'small muted', 'Captured after the saved rating. These events are not part of that review.'));
+      renderEvidence(body, afterReview, 'post-review');
+      main.append(section('After this review', body));
+    }
     side.append(section('Review status', (() => { const body = node('div'); add(body, node('p', '', `Updated ${formatDate(task.updated_at)}`));
       if (task.review) add(body, node('p', 'small muted', `Saved ${formatDate(task.review.recorded_at)} · Completion ${task.review.completion === 'yes' ? 'yes' : task.review.completion === 'no' ? 'no' : 'not recorded'}`));
       else add(body, node('p', 'small muted', 'Your review has not been saved yet.')); return body; })()));
@@ -315,7 +384,8 @@
       state.share = null; state.selected = new Set(); state.redactions = {};
       location.hash = `share=${encodeURIComponent(String(task.task_id))}`;
     }, 'button'));
-    else side.append(button(task.status === 'interrupted' ? 'Review interrupted task' : 'Review this task', () => { location.hash = `review=${encodeURIComponent(String(task.task_id))}`; }, 'button'));
+    else if (task.status === 'interrupted' || task.status === 'awaiting_review') side.append(button(task.status === 'interrupted' ? 'Review interrupted task' : 'Review this task', () => { location.hash = `review=${encodeURIComponent(String(task.task_id))}`; }, 'button'));
+    else add(side, node('p', 'notice', task.status === 'in_progress' ? 'A review becomes available when this task is finished or interrupted.' : 'A review is unavailable for this task status.'));
     columns.append(main, side); app.append(columns); setFocus('h1');
   }
   function renderEvidence(parent, entries, kind) {
@@ -332,28 +402,89 @@
 
   function ratingControl(key, label, hint, initial, required) {
     const row = node('div', 'rating-control'); const name = node('div'); add(name, node('strong', '', label)); if (hint) add(name, node('small', '', hint));
-    const stars = node('div', 'stars'); stars.setAttribute('role', 'group'); stars.setAttribute('aria-label', `${label}${required ? ', required' : ', optional'}`);
+    const stars = node('div', 'stars'); stars.setAttribute('role', 'radiogroup'); stars.setAttribute('aria-label', `${label}${required ? ', required' : ', optional'}`);
+    const initialValue = Number.isInteger(Number(initial)) && Number(initial) >= 1 && Number(initial) <= 5 ? Number(initial) : 0;
+    const update = (score, moveFocus = false, notify = true) => {
+      if (score) stars.dataset.value = String(score); else delete stars.dataset.value;
+      stars.querySelectorAll('button[role=radio]').forEach(item => {
+        const value = Number(item.dataset.rating); const checked = value === score;
+        item.setAttribute('aria-checked', String(checked)); item.tabIndex = checked || (!score && value === 1) ? 0 : -1;
+        item.classList.toggle('filled', Boolean(score) && value <= score);
+        if (moveFocus && checked) item.focus();
+      });
+      if (score && notify) announce(`${label}: ${score} of 5`);
+    };
     for (let score = 1; score <= 5; score++) {
-      const star = node('button', 'star-btn', '★'); star.type = 'button'; star.setAttribute('aria-label', `${score} of 5`); star.setAttribute('aria-pressed', String(Number(initial) === score)); star.dataset.rating = String(score);
-      star.addEventListener('click', () => { stars.dataset.value = String(score); stars.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.rating) <= score))); announce(`${label}: ${score} of 5`); }); stars.append(star);
+      const star = node('button', 'star-btn', '★'); star.type = 'button'; star.setAttribute('role', 'radio'); star.setAttribute('aria-label', `${score} of 5`); star.setAttribute('aria-checked', 'false'); star.dataset.rating = String(score); star.tabIndex = initialValue === score || (!initialValue && score === 1) ? 0 : -1;
+      star.addEventListener('click', () => update(score));
+      star.addEventListener('keydown', event => {
+        let next = null;
+        if (event.key === 'ArrowRight' || event.key === 'ArrowUp') next = Math.min(5, score + 1);
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') next = Math.max(1, score - 1);
+        if (event.key === 'Home') next = 1; if (event.key === 'End') next = 5;
+        if (next !== null) { event.preventDefault(); update(next, true); }
+      }); stars.append(star);
     }
-    if (Number(initial) >= 1 && Number(initial) <= 5) stars.dataset.value = String(initial);
-    stars.dataset.key = key; stars.dataset.required = String(required); row.append(name, stars); return row;
+    stars.dataset.key = key; stars.dataset.required = String(required); row.append(name, stars);
+    if (!required) row.append(button(`Clear ${label.toLowerCase()}`, () => update(0), 'button tertiary clear-rating'));
+    if (initialValue) update(initialValue, false, false);
+    return row;
   }
   async function loadReview(id) {
     if (!state.current || String(state.current.task_id) !== id) { await loadTaskForReview(id); return; }
-    renderReview(state.current);
+    presentReview(state.current);
   }
   async function loadTaskForReview(id) {
     const serial = ++requestSerial; loading('Loading review…');
-    try { const task = await request(`/tasks/${encodeURIComponent(id)}`); if (serial !== requestSerial) return; state.current = task; renderReview(task); }
+    try { const task = await request(`/tasks/${encodeURIComponent(id)}`); if (serial !== requestSerial) return; state.current = task; presentReview(task); }
     catch (error) { if (serial !== requestSerial) return; app.replaceChildren(renderError(error.message, () => loadTaskForReview(id))); }
   }
+  function presentReview(task) {
+    if (task?.status === 'awaiting_review' || task?.status === 'interrupted') { renderReview(task); return; }
+    renderReviewStatus(task);
+  }
+  function renderReviewStatus(task) {
+    app.replaceChildren(); navState('work');
+    const hero = node('div', 'hero'); const copy = node('div'); add(copy, node('p', 'eyebrow', 'Task review'));
+    add(copy, node('h1', '', safeText(task?.title || 'Task review')));
+    const text = task?.status === 'reviewed'
+      ? 'A human review is already saved for this task. Saved reviews are read-only.'
+      : task?.status === 'in_progress'
+        ? 'This task is still in progress. A review becomes available after the runtime records a result or interruption.'
+        : 'This task is not ready for review yet.';
+    add(copy, node('p', 'lede', text)); hero.append(copy); app.append(hero);
+    if (task && typeof task === 'object') app.append(renderPerformance(task));
+    const actions = node('div', 'review-actions');
+    actions.append(button('Open task record', () => { location.hash = `task=${encodeURIComponent(String(task?.task_id || ''))}`; }, 'button'));
+    if (task?.status === 'reviewed') actions.append(button('Prepare a share snapshot', () => { location.hash = `share=${encodeURIComponent(String(task.task_id))}`; }, 'button secondary'));
+    app.append(actions); setFocus('h1');
+  }
+  function renderBeforeAfter(task) {
+    const group = node('div', 'before-after');
+    const before = node('section', 'ba-card before'); const beforeHead = node('div', 'preview-toolbar');
+    add(beforeHead, node('h2', '', 'Intended work'));
+    beforeHead.append(sourceBadge(task.baseline_source || 'agent-reported')); before.append(beforeHead);
+    add(before, node('p', '', task.baseline_missing ? 'Baseline not recorded for this task.' : safeText(task.goal || 'Goal not recorded')));
+    const after = node('section', 'ba-card after'); const afterHead = node('div', 'preview-toolbar');
+    add(afterHead, node('h2', '', 'Recorded result'));
+    afterHead.append(sourceBadge(task.result ? 'agent-reported' : undefined)); after.append(afterHead);
+    add(after, node('p', '', safeText(task.result || 'No result recorded')));
+    group.append(before, after); return group;
+  }
+  function renderTaskBrief(task) {
+    const body = node('div');
+    if (!task.baseline_missing) body.append(valueBlock('Goal', task.goal));
+    const criteria = node('div', 'content-block'); fillList(criteria, 'Success criteria', task.success_criteria); body.append(criteria);
+    return section('Task brief', body);
+  }
   function renderReview(task, message = '') {
+    if (!['awaiting_review', 'interrupted'].includes(task?.status)) { renderReviewStatus(task); return; }
     app.replaceChildren(); navState('work');
     const steps = node('div', 'stepper'); ['1 · Review', '2 · Share'].forEach((v, i) => { const s = node('span', i === 0 ? 'active' : '', v); steps.append(s); }); app.append(steps);
     const hero = node('div', 'hero'); const copy = node('div'); add(copy, node('p', 'eyebrow', 'Task review'));
-    add(copy, node('h1', '', safeText(task.title || 'Untitled task'))); add(copy, node('p', 'lede', 'Compare the result with the goal and criteria. Ratings describe what was observed; they do not estimate unmeasured time or cost.')); hero.append(copy); app.append(hero);
+    add(copy, node('h1', '', safeText(task.title || 'Untitled task'))); add(copy, node('p', 'lede', 'Compare the result with the goal and criteria. Use your judgment for ratings; resource readings are shown separately.')); hero.append(copy); app.append(hero);
+    const reviewContext = node('div', 'review-context');
+    reviewContext.append(renderBeforeAfter(task), renderTaskBrief(task), renderPerformance(task)); app.append(reviewContext);
     if (message) { const notice = node('div', 'error', message); notice.setAttribute('role', 'alert'); app.append(notice); }
     const form = node('form', 'panel'); form.id = 'review-form'; form.addEventListener('submit', saveReview);
     add(form, node('h2', '', 'Did the task reach its goal?'));
@@ -375,7 +506,7 @@
     ratingGroup.append(ratingControl('overall', 'Overall', 'Required · overall task performance', task.review?.ratings?.overall, true));
     OPTIONAL_RATINGS.forEach(([key, label, hint]) => ratingGroup.append(ratingControl(key, label, `Optional · ${hint}`, task.review?.ratings?.[key], false)));
     form.append(ratingGroup);
-    const help = node('p', 'form-help', 'Ratings use a 1 to 5 scale. Optional categories can stay unrated when they were not measured.'); form.append(help);
+    const help = node('p', 'form-help', 'Ratings use a 1 to 5 scale. Leave optional dimensions unrated if you cannot judge them.'); form.append(help);
     const buttons = node('div', 'review-actions'); const save = node('button', 'button', task.review ? 'Save updated review' : 'Save review'); save.type = 'submit'; buttons.append(save);
     buttons.append(button('Cancel', () => { location.hash = `task=${encodeURIComponent(String(task.task_id))}`; }, 'button secondary')); form.append(buttons);
     const err = node('div', 'inline-error'); err.id = 'review-error'; err.hidden = true; form.append(err); app.append(form); setFocus('h1');
@@ -417,7 +548,7 @@
       } };
     }
     if (key === 'context') return {
-      ...(task?.context && typeof task.context === 'object' && !Array.isArray(task.context) ? task.context : {}),
+      baseline: task?.context || {},
       evidence: evidence.filter(e => e?.kind === 'context').map(e => ({ source: e.source, data: e.data }))
     };
     if (key === 'process') return evidence.filter(e => ['milestone', 'setup', 'criteria'].includes(e?.kind)).map(e => ({ kind: e.kind, source: e.source, data: e.data }));
@@ -435,7 +566,7 @@
         return shareLeafPaths(child, `${path}.${key}`);
       });
     }
-    return path ? [path] : [];
+    return path && value !== null && value !== undefined && value !== '' ? [path] : [];
   }
   function redactionLeaves(value, path) {
     if (Array.isArray(value)) return value.flatMap((child, index) => redactionLeaves(child, `${path}.${index}`));
@@ -466,13 +597,20 @@
     SHARE_FIELDS.forEach(([key, label, desc]) => {
       const row = node('div', 'share-field'); const header = node('label', 'share-field-header'); const check = node('input'); check.type = 'checkbox'; check.dataset.shareRoot = key; check.checked = state.selected.has(key);
       const text = node('span'); add(text, node('strong', '', `Include all ${label.toLowerCase()}`)); add(text, node('p', '', desc)); header.append(check, text); row.append(header);
+      const fieldChoices = node('details', 'field-choices');
       const leaves = node('div', 'share-leaves');
       const paths = shareLeafPaths(shareRoot(task, key), key).filter(path => path !== key);
+      fieldChoices.append(node('summary', '', `Choose individual fields (${paths.length})`));
+      fieldChoices.open = paths.some(path => state.selected.has(path));
       paths.forEach(path => {
         const leafLabel = node('label', 'share-leaf'); const leaf = node('input'); leaf.type = 'checkbox'; leaf.dataset.sharePath = path; leaf.checked = state.selected.has(key) || state.selected.has(path); leaf.disabled = state.selected.has(key);
-        add(leafLabel, leaf); add(leafLabel, node('code', '', path)); leaves.append(leafLabel);
+        add(leafLabel, leaf);
+        const friendlyPath = path.split('.').map(part => /^\d+$/.test(part)
+          ? `Item ${Number(part) + 1}`
+          : part.replaceAll('_', ' ').replaceAll('-', ' ')).join(' › ');
+        add(leafLabel, node('span', '', friendlyPath)); leaves.append(leafLabel);
       });
-      row.append(leaves);
+      fieldChoices.append(leaves); row.append(fieldChoices);
       const redactions = node('div', 'redaction-list'); redactions.dataset.redactions = key; row.append(redactions); fields.append(row);
       check.addEventListener('change', () => {
         leaves.querySelectorAll('input[data-share-path]').forEach(input => { input.disabled = check.checked; if (check.checked) input.checked = false; });

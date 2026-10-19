@@ -1,11 +1,12 @@
 """Task-centric lifecycle repository backed by ReviewStore's SQLite database."""
 import json
+import math
 import re
 import secrets
 from datetime import datetime, timezone
 
 from task_schema import (SHARE_FIELDS, ValidationError,
-                         KEY_SECRET, SECRET_VALUE, digest_payload,
+                         SECRET_VALUE, digest_payload, is_credential_key,
                          StaleTaskRevisionError,
                          reject_credentials, share_path,
                          validate_evidence, validate_review_payload,
@@ -217,7 +218,7 @@ class TaskStore:
             raise ValidationError("unsupported task status filter")
         with self.store._lock:
             rows = self.db.execute("SELECT task_json FROM task_records ORDER BY created_at DESC").fetchall()
-            items = [self._result(json.loads(row[0])) for row in rows]
+            items = [self._list_summary(json.loads(row[0])) for row in rows]
             return [item for item in items if status is None or item["status"] == status]
 
     def save_review(self, task_id, payload):
@@ -345,25 +346,66 @@ class TaskStore:
         encoded = _dumps(payload)
         preview_id = "share_" + secrets.token_urlsafe(16)
         digest = digest_payload(payload)
+        created_at = _now()
         with self.store._lock:
             self.db.execute("INSERT INTO task_share_previews VALUES(?,?,?,?,?)",
-                            (preview_id, task_id, encoded, digest, _now()))
-        return {"preview_id": preview_id, "payload": payload, "digest": digest}
+                            (preview_id, task_id, encoded, digest, created_at))
+        return {"preview_id": preview_id, "payload": payload, "digest": digest,
+                "created_at": created_at}
 
     def get_share_preview(self, preview_id):
         if not isinstance(preview_id, str) or not re.fullmatch(r"share_[A-Za-z0-9_-]{8,128}", preview_id):
             raise ValidationError("invalid share preview id")
         with self.store._lock:
-            row = self.db.execute("SELECT payload_json,digest FROM task_share_previews WHERE preview_id=?", (preview_id,)).fetchone()
+            row = self.db.execute("SELECT payload_json,digest,created_at FROM task_share_previews WHERE preview_id=?", (preview_id,)).fetchone()
             if not row:
                 return None
-            return {"preview_id": preview_id, "payload": json.loads(row[0]), "digest": row[1]}
+            return {"preview_id": preview_id, "payload": json.loads(row[0]),
+                    "digest": row[1], "created_at": row[2]}
 
     @staticmethod
     def _result(task):
         if task is None:
             return None
         return {k: v for k, v in task.items() if k != "legacy_action"}
+
+    @staticmethod
+    def _list_summary(task):
+        harness = task.get("harness") or {}
+        review = task.get("review")
+        if review is not None:
+            review = {key: review.get(key) for key in
+                      ("completion", "ratings", "recorded_at")}
+        resources = {}
+        for index, record in enumerate(task.get("resources", {}).values()):
+            source = record.get("source") if isinstance(record, dict) else None
+            if not isinstance(record, dict):
+                continue
+            concise = {}
+            for name, metric in record.items():
+                if name == "source":
+                    continue
+                if isinstance(metric, dict) and set(metric) == {"value", "unit"}:
+                    concise[name] = metric
+                elif (isinstance(metric, (int, float))
+                      and not isinstance(metric, bool)
+                      and math.isfinite(metric) and metric >= 0):
+                    # Legacy imported values have unknown units; preserve that uncertainty.
+                    concise[name] = {"value": metric, "unit": ""}
+            if concise:
+                resources[f"resource_{index}"] = {**concise, "source": source}
+        return {"task_id": task["task_id"], "title": task["title"],
+                "category": task["category"], "status": task["status"],
+                "runtime": task.get("runtime"), "model": task.get("model"),
+                "harness": ({key: harness.get(key) for key in ("mode", "name", "version")}
+                            if task.get("harness") is not None else None),
+                "review": review, "resources": resources,
+                "created_at": task["created_at"], "updated_at": task["updated_at"],
+                "baseline_missing": task["baseline_missing"],
+                "baseline_source": task.get("baseline_source", "imported"),
+                "parent_task_id": task.get("parent_task_id"),
+                "evidence_count": (len(task.get("evidence", []))
+                                    + len(task.get("post_review_evidence", [])))}
 
 
 def _set_leaf(target, path, value):
@@ -431,20 +473,36 @@ def _validate_task_id(task_id):
 
 
 _LOCAL_PATH = re.compile(r"(?:^|\s)(?:/Users/|/home/|/private/|/Volumes/|[A-Za-z]:\\)")
-_LOCAL_ID_KEYS = {"task_id", "parent_task_id", "event_id", "request_id", "path", "local_path"}
+_COMMUNITY_PRIVATE_KEY_BOUNDARY = re.compile(
+    r"(?:^|_)(?:local|private|owner|user|email|secret|password|credential|authorization|authcode|session|reviewid|taskid|eventid|requestid|filepath|path)(?:_|$)",
+    re.I)
+_COMMUNITY_PRIVATE_KEY_COMPACT = re.compile(
+    r"(?:apikey|secret|password|credential|authorization|authcode|session|email|ownerid|userid|local(?:[a-z0-9]*(?:id|uuid|key))?|reviewid|taskid|eventid|requestid|filepath|accountid|accountuuid|agentid)",
+    re.I)
+_COMMUNITY_ALLOWED_TOKEN_KEYS = {
+    "tokens", "tokencount", "tokenused", "tokeninput", "tokenoutput", "tokentotal",
+    "tokenscount", "tokensused", "tokensinput", "tokensoutput", "tokenstotal",
+    "inputtokens", "outputtokens", "totaltokens",
+}
+
+
+def _is_community_private_key(key):
+    compact = re.sub(r"[^a-z0-9]", "", key.lower())
+    if _COMMUNITY_PRIVATE_KEY_BOUNDARY.search(key):
+        return True
+    if (_COMMUNITY_PRIVATE_KEY_COMPACT.search(compact)
+            or compact in {"id", "uuid", "auth", "oauth", "path", "account"}):
+        return True
+    return "token" in compact and compact not in _COMMUNITY_ALLOWED_TOKEN_KEYS
 
 
 def _sanitize_share(value, key=None):
     if isinstance(value, dict):
         result = {}
         for key, child in value.items():
-            lowered = key.lower()
-            if lowered in _LOCAL_ID_KEYS - {"path", "local_path"}:
+            if _is_community_private_key(key):
                 continue
-            if lowered in {"path", "local_path"}:
-                result[key] = "[local path withheld]"
-            else:
-                result[key] = _sanitize_share(child, key)
+            result[key] = _sanitize_share(child, key)
         return result
     if isinstance(value, list):
         return [_sanitize_share(v) for v in value]
@@ -456,7 +514,7 @@ def _sanitize_share(value, key=None):
 def _safe_legacy(value):
     if isinstance(value, dict):
         return {k: _safe_legacy(v) for k, v in value.items()
-                if isinstance(k, str) and not KEY_SECRET.search(k)}
+                if isinstance(k, str) and not is_credential_key(k)}
     if isinstance(value, list):
         return [_safe_legacy(v) for v in value]
     if isinstance(value, str) and SECRET_VALUE.search(value):

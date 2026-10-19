@@ -20,9 +20,26 @@ EVENT_KINDS = {"milestone", "setup", "context", "artifact", "criteria", "resourc
 SHARE_FIELDS = {"task_text", "definitions", "context", "process", "artifacts", "resources", "setup"}
 OPTIONAL_RATINGS = {"quality", "speed", "resource_efficiency"}
 GAP_REASONS = {"incomplete", "missed_brief", "incorrect", "missing_tool"}
-KEY_SECRET = re.compile(r"(?:password|passwd|secret|credential|api[_-]?key|access[_-]?key|refresh[_-]?token|auth[_-]?token|private[_-]?key)", re.I)
+SECRET_KEY_NAMES = {"password", "passwd", "secret", "credential", "credentials",
+                    "apikey", "accesskey", "privatekey", "authorization", "auth",
+                    "authheader", "authorizationheader", "bearer", "cookie",
+                    "setcookie", "token", "accesstoken", "refreshtoken", "idtoken",
+                    "authtoken", "sessiontoken"}
+SECRET_KEY_SUFFIXES = ("apikey", "accesskey", "privatekey", "secret", "credential",
+                       "credentials", "accesstoken", "refreshtoken", "idtoken",
+                       "authtoken", "sessiontoken", "token", "authorization",
+                       "bearer", "auth")
 SECRET_VALUE = re.compile(r"(?:\bsk-[A-Za-z0-9_-]{12,}|\bgh[pousr]_[A-Za-z0-9_]{12,}|\bgithub_pat_[A-Za-z0-9_]{12,}|\bxox[baprs]-[A-Za-z0-9-]{12,}|\bBearer\s+[A-Za-z0-9._~+/-]{12,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})", re.I)
 MAX_JSON_BYTES = 65536
+
+
+def is_credential_key(key):
+    """Recognize credential fields without matching ordinary words like author."""
+    if not isinstance(key, str):
+        return False
+    normalized = re.sub(r"[^a-z0-9]", "", key.lower())
+    return (normalized in SECRET_KEY_NAMES
+            or any(normalized.endswith(suffix) for suffix in SECRET_KEY_SUFFIXES))
 
 
 def _json(value):
@@ -46,7 +63,7 @@ def reject_credentials(value, trail="data"):
         for key, child in value.items():
             if not isinstance(key, str):
                 raise ValidationError(f"{trail} object keys must be strings")
-            if KEY_SECRET.search(key):
+            if is_credential_key(key):
                 raise ValidationError(f"credential-shaped key rejected at {trail}.{key}")
             reject_credentials(child, f"{trail}.{key}")
     elif isinstance(value, list):
