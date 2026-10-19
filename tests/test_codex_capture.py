@@ -268,7 +268,7 @@ class CodexCaptureTest(unittest.TestCase):
         finally:
             conn.close()
         with ReviewStore.open(self.data) as store:
-            self.assertEqual(store.migration_versions(), [1, 2, 3])
+            self.assertEqual(store.migration_versions(), [1, 2, 3, 4])
             card = store.get_card("manual-token")
             self.assertEqual(card["revision"], 7)
             self.assertEqual(card["status"], "pending")

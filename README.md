@@ -7,8 +7,10 @@ Public source for the local runtime integrations and review flow. The code is ex
 - `mcp_server.py` — local MCP stdio bridge (thin client of the loopback service).
 - `local_service.py` — per-user loopback HTTP service: `start/stop/status/serve/import`.
 - `review_schema.py` — shared validation (no service/store imports).
-- `review_store.py` — SQLite persistence, tracked migrations, legacy JSONL import.
+- `review_store.py` and `task_store.py` — SQLite persistence, tracked migrations, legacy review import, and task lifecycle records.
+- `task_schema.py` — validation for task baselines, evidence, human reviews, and share previews.
 - `rating-popup/` — local rating form served by the service.
+- `workspace-ui/` — local task history, evidence, human review, and share-preview interface served by the service.
 - `codex_capture.py` — opt-in command hook collector and exact captured-review URL listing.
 - `hooks.codex.example.json` — disabled-by-default example; it is not installed or auto-loaded.
 - `skill/agent-performance-review/` — Codex skill source.
@@ -21,6 +23,8 @@ Public source for the local runtime integrations and review flow. The code is ex
 The Codex review hooks were removed from the active user configuration. This checkout is not installed in any runtime. The native capture adapter is an opt-in local experiment and has synthetic fixture coverage only. It does not add an assistant footer, automatic link presentation, another model turn, or model context. Actual Codex resume identity continuity and hook coverage remain unverified.
 
 The local flow keeps reviews on the user's computer. It must not collect prompts, responses, tool arguments or outputs, file paths, or document contents. Manual review cards use caller-supplied model and context values; opt-in Codex capture displays separately labeled local hook observations. Token and cost remain unknown because this capture path does not measure them.
+
+The task-recording interface adds a separate lifecycle: `start_task` records the caller-supplied baseline, `append_evidence` adds source-labeled events, `finish_task` records the result without inventing a human rating, and the local workspace collects a review. Reusing a task request or evidence event is idempotent only when the original content is unchanged. Legacy reviews are imported into the task view with a missing baseline clearly marked. `prepare_share` creates a frozen preview from explicitly selected fields; it does not publish or upload anything.
 
 ## Local MCP setup
 

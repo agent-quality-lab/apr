@@ -26,6 +26,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -51,10 +52,12 @@ from review_store import (  # noqa: E402
     secure_existing_private,
     secure_file,
 )
+from task_schema import StaleTaskRevisionError  # noqa: E402
 
-SERVICE_VERSION = "0.5.0"
+SERVICE_VERSION = "0.6.0"
 REPO_ROOT = Path(__file__).resolve().parent
 UI_DIR = REPO_ROOT / "rating-popup"
+APP_UI_DIR = REPO_ROOT / "workspace-ui"
 MAX_INTERNAL_BYTES = 65536
 MAX_BROWSER_BYTES = 16384
 STARTUP_TIMEOUT = 20.0
@@ -64,6 +67,12 @@ STATIC_FILES = {
     "index.html": ("index.html", "text/html; charset=utf-8"),
     "styles.css": ("styles.css", "text/css; charset=utf-8"),
     "app.js": ("app.js", "text/javascript; charset=utf-8"),
+}
+APP_STATIC_FILES = {
+    "": ("index.html", "text/html; charset=utf-8"),
+    "index.html": ("index.html", "text/html; charset=utf-8"),
+    "app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
 
 
@@ -255,6 +264,11 @@ def _pick_free_port():
 
 def base_url_for(port):
     return f"http://127.0.0.1:{port}"
+
+
+def decode_path_segment(value):
+    """Decode one browser route component (legacy review ids include colons)."""
+    return unquote(value)
 
 
 # Exact loopback origins this client ever talks to: nothing else may
@@ -491,7 +505,7 @@ def ping_service(base_url, credential, timeout=5):
 
 # ---------------------------------------------------------------- handler ---
 class ServiceHandler(http.server.BaseHTTPRequestHandler):
-    server_version = "APRReview/0.5.0"
+    server_version = "APRReview/0.6.0"
     # HTTP/1.1 keeps the handshake socket open so the authenticated
     # request can reuse the proven connection. All responses carry
     # Content-Length, so keep-alive is well-defined.
@@ -562,6 +576,45 @@ class ServiceHandler(http.server.BaseHTTPRequestHandler):
         if path == "/status":
             self.send_json(200, {"status": "running", "version": SERVICE_VERSION})
             return
+        if path == "/app/api/tasks":
+            self.send_json(200, {"tasks": self.server.store.tasks.list_tasks()})
+            return
+        if path.startswith("/app/api/tasks/"):
+            try:
+                task_id = decode_path_segment(path[len("/app/api/tasks/"):])
+                task = self.server.store.tasks.get_task(task_id)
+                if task is None:
+                    self.send_json(404, {"error": "task not found"})
+                else:
+                    self.send_json(200, task)
+            except ValidationError as exc:
+                self.send_json(400, {"error": str(exc)})
+            return
+        if path == "/app/api/setup":
+            self.send_json(200, self.server.store.tasks.setup_get())
+            return
+        if path.startswith("/app/api/shares/"):
+            try:
+                preview_id = decode_path_segment(path[len("/app/api/shares/"):])
+                preview = self.server.store.tasks.get_share_preview(preview_id)
+                if preview is None:
+                    self.send_json(404, {"error": "share preview not found"})
+                else:
+                    self.send_json(200, preview)
+            except ValidationError as exc:
+                self.send_json(400, {"error": str(exc)})
+            return
+        if path.startswith("/app/"):
+            asset = path[len("/app/"):]
+            if asset in APP_STATIC_FILES:
+                file_name, content_type = APP_STATIC_FILES[asset]
+                try:
+                    body = (APP_UI_DIR / file_name).read_bytes()
+                except OSError:
+                    self.send_error(503, "Workspace page files are unavailable")
+                    return
+                self.send_bytes(200, content_type, body)
+                return
         token, suffix = self._review_route(path)
         if token is None:
             self.send_error(404)
@@ -597,6 +650,9 @@ class ServiceHandler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/api/internal/"):
             self._handle_internal(path[len("/api/internal/"):])
             return
+        if path.startswith("/app/api/"):
+            self._handle_app_post(path[len("/app/api/"):])
+            return
         token, suffix = self._review_route(path)
         card = self.server.store.get_card(token) if token else None
         if suffix != "api/submit" or card is None:
@@ -613,7 +669,7 @@ class ServiceHandler(http.server.BaseHTTPRequestHandler):
                 result = {"status": receipt["status"],
                           "review_id": receipt["review_id"],
                           "recorded_at": receipt["recorded_at"]}
-        except StaleRevisionError as exc:
+        except (StaleRevisionError, StaleTaskRevisionError) as exc:
             self.send_json(409, {"error": str(exc)})
             return
         except ConflictError as exc:
@@ -627,6 +683,35 @@ class ServiceHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(500, {"error": "local store unavailable"})
             return
         self.send_json(200, result)
+
+    def _handle_app_post(self, route):
+        try:
+            payload = self.read_json_body(MAX_BROWSER_BYTES)
+            if not isinstance(payload, dict):
+                raise ValidationError("request payload must be an object")
+            if route == "setup":
+                self.send_json(200, self.server.store.tasks.setup_save(payload))
+                return
+            parts = route.split("/")
+            if len(parts) >= 2 and parts[0] == "tasks":
+                parts[1] = decode_path_segment(parts[1])
+            if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "review":
+                self.send_json(200, self.server.store.tasks.save_review(parts[1], payload))
+                return
+            if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "share-preview":
+                self.send_json(200, self.server.store.tasks.prepare_share(
+                    parts[1], payload.get("selected_fields"), payload.get("redactions")))
+                return
+            self.send_error(404)
+        except StaleRevisionError as exc:
+            self.send_json(409, {"error": str(exc)})
+        except ConflictError as exc:
+            self.send_json(409, {"error": str(exc)})
+        except ValidationError as exc:
+            self.send_json(400, {"error": str(exc)})
+        except StoreError as exc:
+            log(f"store error: {exc}")
+            self.send_json(500, {"error": "local store unavailable"})
 
     @staticmethod
     def _review_route(path):
@@ -685,12 +770,40 @@ class ServiceHandler(http.server.BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValidationError("internal payload must be an object")
             args = payload.get("arguments", {})
+            if not isinstance(args, dict):
+                raise ValidationError("arguments must be an object")
             if name == "ping":
                 self.send_json(200, {"ok": True})
             elif name == "request_rating":
                 self.send_json(200, self._internal_request_rating(args))
             elif name == "record_review":
                 self.send_json(200, self._internal_record(args))
+            elif name == "start_task":
+                task = self.server.store.tasks.start_task(args)
+                task["task_url"] = (base_url_for(self.server.service_port) +
+                                    "/app/#task=" + task["task_id"])
+                self.send_json(200, task)
+            elif name == "append_evidence":
+                self.send_json(200, self.server.store.tasks.append_evidence(
+                    args.get("task_id"), args.get("event_id"), args.get("kind"),
+                    args.get("source"), args.get("data")))
+            elif name == "finish_task":
+                self.send_json(200, self.server.store.tasks.finish_task(
+                    args.get("task_id"), args.get("event_id"), args.get("result"),
+                    args.get("interrupted", False), args.get("verification")))
+            elif name == "get_task":
+                task = self.server.store.tasks.get_task(args.get("task_id"))
+                if task is None:
+                    raise ValidationError("task not found")
+                self.send_json(200, task)
+            elif name == "list_tasks":
+                self.send_json(200, {"tasks": self.server.store.tasks.list_tasks(args.get("status"))})
+            elif name == "prepare_share":
+                self.send_json(200, self.server.store.tasks.prepare_share(
+                    args.get("task_id"), args.get("selected_fields"), args.get("redactions")))
+            elif name == "get_setup":
+                check_keys(args, "arguments", [])
+                self.send_json(200, self.server.store.tasks.setup_get())
             elif name == "summary":
                 check_keys(args, "arguments", ["job_type"])
                 job_type = args.get("job_type")
@@ -707,10 +820,10 @@ class ServiceHandler(http.server.BaseHTTPRequestHandler):
                                  name="apr-shutdown", daemon=True).start()
             else:
                 self.send_error(404)
+        except (ConflictError, StaleRevisionError, StaleTaskRevisionError) as exc:
+            self.send_json(409, {"error": str(exc)})
         except ValidationError as exc:
             self.send_json(400, {"error": str(exc)})
-        except (ConflictError, StaleRevisionError) as exc:
-            self.send_json(409, {"error": str(exc)})
         except StoreError as exc:
             log(f"store error: {exc}")
             self.send_json(500, {"error": "local store unavailable"})

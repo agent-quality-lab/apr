@@ -111,7 +111,46 @@ CREATE TABLE IF NOT EXISTS runtime_rating_evidence (
 );
 """
 
-MIGRATIONS = [(1, MIGRATION_1), (2, MIGRATION_2), (3, MIGRATION_3)]
+MIGRATION_4 = """
+CREATE TABLE IF NOT EXISTS task_records (
+    task_id TEXT PRIMARY KEY,
+    request_id TEXT UNIQUE NOT NULL,
+    task_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_events (
+    task_id TEXT NOT NULL REFERENCES task_records(task_id),
+    event_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    source TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, event_id)
+);
+CREATE TABLE IF NOT EXISTS task_reviews (
+    task_id TEXT PRIMARY KEY REFERENCES task_records(task_id),
+    review_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_share_previews (
+    preview_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES task_records(task_id),
+    payload_json TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_setup (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    mode TEXT NOT NULL,
+    runtime TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS task_records_status ON task_records(json_extract(task_json, '$.status'));
+"""
+
+MIGRATIONS = [(1, MIGRATION_1), (2, MIGRATION_2), (3, MIGRATION_3),
+              (4, MIGRATION_4)]
 
 CONTEXT_SUBSET = ("review_id", "job_type", "task", "action", "result",
                   "verification", "context", "resources")
@@ -424,6 +463,8 @@ class ReviewStore:
                         f"refusing symlinked database file: {self.db_path}")
             try:
                 self.apply_migrations()
+                from task_store import TaskStore
+                self.tasks = TaskStore(self)
             except Exception:
                 try:
                     self._conn.close()
@@ -1101,6 +1142,10 @@ class ReviewStore:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT snapshot, saved_full FROM jobs WHERE status = 'saved'").fetchall()
+            task_rows = self._conn.execute(
+                "SELECT t.task_json,r.review_json FROM task_reviews r"
+                " JOIN task_records t USING(task_id)"
+                " WHERE t.task_id NOT LIKE 'legacy:%'").fetchall()
         groups = {}
         for row in rows:
             saved = json.loads(row["saved_full"])
@@ -1111,16 +1156,28 @@ class ReviewStore:
             if job_type and kind != job_type:
                 continue
             groups.setdefault(kind, []).append(saved)
+        for row in task_rows:
+            task = json.loads(row["task_json"])
+            review = json.loads(row["review_json"])
+            kind = task.get("category")
+            if job_type and kind != job_type:
+                continue
+            groups.setdefault(kind, []).append(review | {"job_type": kind})
 
         def summarize(items):
             score_rows = [item["ratings"] for item in items]
-            means = {k: round(sum(r[k] for r in score_rows) / len(score_rows), 2)
-                     for k in ("overall", "quality", "speed", "resource_efficiency")} \
-                if score_rows else None
+            rating_keys = ("overall", "quality", "speed", "resource_efficiency")
+            counts = {key: sum(key in ratings for ratings in score_rows)
+                      for key in rating_keys}
+            means = {key: (round(sum(r[key] for r in score_rows if key in r)
+                                / counts[key], 2) if counts[key] else None)
+                     for key in rating_keys} if score_rows else None
             outcomes = [i.get("completion") for i in items
                         if i.get("completion") in ("yes", "no")]
             rate = round(outcomes.count("yes") / len(outcomes), 2) if outcomes else None
-            return {"count": len(items), "completion_rate": rate, "mean_ratings": means}
+            return {"count": len(items), "completion_rate": rate,
+                    "mean_ratings": means,
+                    "rating_counts": counts if score_rows else {key: 0 for key in rating_keys}}
 
         every = [item for items in groups.values() for item in items]
         return {"scope": SCOPE, "job_type_filter": job_type or "all",
