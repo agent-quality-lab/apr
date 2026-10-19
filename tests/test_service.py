@@ -89,6 +89,48 @@ class ServiceCase(unittest.TestCase):
 
 
 class ServiceBehaviorTest(ServiceCase):
+    def test_task_api_review_share_and_setup_round_trip(self):
+        _data_dir, base, token = self.start_service()
+        start = {
+            "request_id": "service-task-1", "title": "Add service API",
+            "category": "coding", "goal": "Persist tasks", "success_criteria": ["reviewable"],
+            "runtime": "Codex", "model": "test-model",
+            "harness": {"mode": "newcomer", "version": "1", "roles": [],
+                        "loops": [], "rules": [], "tools": [], "context_categories": []},
+            "context": {"user-stated": {"request": "Persist tasks"}},
+        }
+        status, body = api(base, "/api/internal/start_task", token=token,
+                           payload={"arguments": start})
+        self.assertEqual(status, 200, body)
+        task = json.loads(body)
+        task_id = task["task_id"]
+        self.assertTrue(task["task_url"].endswith("/app/#task=" + task_id))
+        status, body = api(base, "/app/api/tasks/" + task_id)
+        self.assertEqual(status, 200)
+        task = json.loads(body)
+        status, body = api(base, "/api/internal/finish_task", token=token,
+                           payload={"arguments": {"task_id": task_id, "event_id": "finish-1",
+                                                   "result": "Done"}})
+        self.assertEqual(status, 200, body)
+        task = json.loads(body)
+        self.assertEqual(task["status"], "awaiting_review")
+        review = {"completion": "yes", "ratings": {"overall": 5},
+                  "gap_reasons": [], "revision": task["revision"]}
+        status, body = api(base, "/app/api/tasks/" + task_id + "/review", payload=review)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["status"], "reviewed")
+        status, body = api(base, "/app/api/tasks/" + task_id + "/share-preview",
+                           payload={"selected_fields": ["task_text"]})
+        self.assertEqual(status, 200, body)
+        preview = json.loads(body)
+        status, body = api(base, "/app/api/shares/" + preview["preview_id"])
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["digest"], preview["digest"])
+        status, body = api(base, "/app/api/setup", payload={"mode": "newcomer", "runtime": "Codex"})
+        self.assertEqual(status, 200, body)
+        status, body = api(base, "/app/api/setup")
+        self.assertEqual(json.loads(body)["mode"], "newcomer")
+
     def test_same_url_across_requests_and_restart(self):
         data_dir, base, token = self.start_service()
         first = self.request_card(base, token)

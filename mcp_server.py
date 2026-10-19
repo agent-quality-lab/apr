@@ -20,7 +20,7 @@ from local_service import ensure_service, http_call  # noqa: E402
 from review_schema import REVIEW_ID  # noqa: E402
 from review_store import SCOPE, StoreError  # noqa: E402
 
-SERVER_INFO = {"name": "agent-performance-review", "version": "0.5.0"}
+SERVER_INFO = {"name": "agent-performance-review", "version": "0.6.0"}
 PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 
 JOB_TYPES = ["writing", "research", "coding", "other"]
@@ -89,9 +89,77 @@ TOOLS = [
         },
     },
     {
+        "name": "start_task",
+        "description": "Start one APR task with an immutable baseline. Reusing request_id with identical data returns the existing task; changed data conflicts.",
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["request_id", "title", "category", "goal", "success_criteria", "runtime", "model", "harness"],
+            "properties": {
+                "request_id": {"type": "string", "maxLength": 128},
+                "title": {"type": "string"}, "category": {"type": "string", "enum": JOB_TYPES},
+                "goal": {"type": "string"}, "success_criteria": {"type": "array", "items": {"type": "string"}},
+                "runtime": {"type": "string"}, "model": {"type": "string"},
+                "parent_task_id": {"type": ["string", "null"]},
+                "context": {"type": "object"}, "baseline_missing": {"type": "boolean"},
+                "baseline_source": {"type": "string", "enum": ["user-stated", "agent-reported", "runtime-observed", "imported"]},
+                "harness": {"type": "object", "additionalProperties": False,
+                    "required": ["mode", "version", "roles", "loops", "rules", "tools", "context_categories"],
+                    "properties": {"mode": {"type": "string", "enum": ["existing", "newcomer"]},
+                        "name": {"type": "string"}, "version": {"type": "string", "maxLength": 256},
+                        **{key: {"type": "array", "items": {"type": "string"}} for key in ("roles", "loops", "rules", "tools", "context_categories")},
+                        "definitions": {"type": "object"}}},
+            },
+        },
+    },
+    {
+        "name": "append_evidence",
+        "description": "Append a source-labeled task event. Event IDs are idempotent and conflicting retries are rejected.",
+        "inputSchema": {"type": "object", "additionalProperties": False,
+            "required": ["task_id", "event_id", "kind", "source", "data"],
+            "properties": {"task_id": {"type": "string"}, "event_id": {"type": "string"},
+                "kind": {"type": "string", "enum": ["milestone", "setup", "context", "artifact", "criteria", "resource"]},
+                "source": {"type": "string", "enum": ["user-stated", "agent-reported", "runtime-observed", "imported"]},
+                "data": {"type": "object"}}},
+    },
+    {
+        "name": "finish_task",
+        "description": "Record agent-reported result and mark a task awaiting human review. Finishing never records a human outcome.",
+        "inputSchema": {"type": "object", "additionalProperties": False,
+            "required": ["task_id", "event_id", "result"],
+            "properties": {"task_id": {"type": "string"}, "event_id": {"type": "string"},
+                "result": {"type": ["string", "object"]}, "interrupted": {"type": "boolean"},
+                "verification": {"type": "object"}}},
+    },
+    {
+        "name": "get_task",
+        "description": "Read one task and its source-labeled evidence.",
+        "inputSchema": {"type": "object", "additionalProperties": False,
+            "required": ["task_id"], "properties": {"task_id": {"type": "string"}}},
+    },
+    {
+        "name": "list_tasks",
+        "description": "List local tasks, optionally filtered by lifecycle status.",
+        "inputSchema": {"type": "object", "additionalProperties": False,
+            "properties": {"status": {"type": "string", "enum": ["in_progress", "interrupted", "awaiting_review", "reviewed"]}}},
+    },
+    {
+        "name": "prepare_share",
+        "description": "Create a frozen, credential-checked apr.share.v1 preview after human review.",
+        "inputSchema": {"type": "object", "additionalProperties": False,
+            "required": ["task_id"], "properties": {"task_id": {"type": "string"},
+                "selected_fields": {"type": "array", "items": {"type": "string"}},
+                "redactions": {"type": "object", "additionalProperties": {"type": "string"}}}},
+    },
+    {
+        "name": "get_setup",
+        "description": "Read saved APR mode/runtime preferences and available local capabilities. This does not install or register anything.",
+        "inputSchema": {"type": "object", "additionalProperties": False,
+                        "properties": {}},
+    },
+    {
         "name": "review_summary",
-        "description": "Local-only count and mean ratings from this machine's review database, "
-                       "grouped by job type. Not community data.",
+        "description": "Local-only task and legacy review counts, completion rate, and mean ratings "
+                       "grouped by category. Optional rating means use only submitted ratings; not community data.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
@@ -146,8 +214,41 @@ def review_summary(args):
     return service_call("summary", args)
 
 
+def start_task(args):
+    task = service_call("start_task", args)
+    return {"task_id": task["task_id"], "task_url": task["task_url"],
+            "revision": task["revision"]}
+
+
+def append_evidence(args):
+    return service_call("append_evidence", args)
+
+
+def finish_task(args):
+    return service_call("finish_task", args)
+
+
+def get_task(args):
+    return service_call("get_task", args)
+
+
+def list_tasks(args):
+    return service_call("list_tasks", args)
+
+
+def prepare_share(args):
+    return service_call("prepare_share", args)
+
+
+def get_setup(args):
+    return service_call("get_setup", args)
+
+
 HANDLERS = {"request_rating": request_rating, "record_review": record_review,
-            "review_summary": review_summary}
+            "review_summary": review_summary, "start_task": start_task,
+            "append_evidence": append_evidence, "finish_task": finish_task,
+            "get_task": get_task, "list_tasks": list_tasks,
+            "prepare_share": prepare_share, "get_setup": get_setup}
 
 
 def handle(method, params):

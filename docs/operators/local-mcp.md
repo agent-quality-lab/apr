@@ -70,6 +70,31 @@ with the same ID returns the saved URL and state without changing the rated
 snapshot. A new job always needs an explicit new `review_id`. Skipping writes
 no rating and leaves the job pending.
 
+## Task recording and local workspace
+
+The MCP bridge also exposes `start_task`, `append_evidence`, `finish_task`,
+`get_task`, `list_tasks`, and `prepare_share`. These tools record one task's
+caller-supplied goal and success criteria, source-labeled evidence, an
+agent-reported result, and a separate human review. `start_task` returns a
+stable local `task_url`; opening it serves the workspace at `/app/`. Task
+records and selected-field share previews use the same private SQLite database
+and follow its data-directory permissions and retention.
+
+Use the same `request_id` and identical baseline to safely retry
+`start_task`. Evidence is keyed by `event_id`: identical retries are
+idempotent, while different content under an existing ID is rejected. Criteria
+changes are recorded as evidence and advance the task revision. Finish records
+the result and moves the task to `awaiting_review` (or `interrupted`); it never
+creates a human completion answer or rating. The browser review must use the
+current revision. Legacy reviews appear in the task workspace with
+`baseline_missing` set; no historical baseline is inferred.
+
+`prepare_share` is available only after a human review. It freezes a versioned
+preview from explicitly selected fields and reports withheld fields. It does
+not publish or upload the preview. Treat the returned payload as private until
+the reviewer deliberately transfers it to a separately configured publishing
+service.
+
 ## Optional native Codex capture (example only)
 
 `codex_capture.py` accepts lifecycle command-hook JSON on stdin and writes an

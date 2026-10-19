@@ -1,48 +1,44 @@
 ---
 name: agent-performance-review
-description: "At the end of every turn, refresh a one-click local rating link for the active task/run. The user opens the compact rating page when ready."
+description: "Use when APR recording is enabled for a task, automation, or ongoing job, or when the user asks to review an agent's work."
 ---
 
 # Agent Performance Review
 
-Use when the user requests a review link, or has authorized an assistant-generated link at the end of each turn. Reuse one review ID for the full active task/run, including earlier turns and linked sub-agent work where visible. This is a manual MCP workflow; prototype hooks stay off.
+APR records a job aimed at a result. A single automation or a conversation spanning fifty messages can each be one task. A chat can contain several tasks. The recording harness complements an existing execution harness; newcomer mode uses the same record format without requiring an existing harness.
 
-## 1. Build a short evidence-based run card
+## Start before working
 
-Use visible conversation evidence for short, privacy-safe **Task**, **Action**, and **Result** summaries of the full active run. Keep each under 500 characters. Generalize names, customer details, URLs, file paths, and document-specific content. Do not read the transcript file, tool arguments or outputs, filenames, or document contents to fill gaps. If a detail is unavailable, use `unknown`; do not infer it.
+When APR recording is enabled, call `start_task` within the normal turn, before substantive work. Supply a stable `request_id`, title, category (`coding`, `writing`, `research`, or `other`), goal, success criteria, runtime/model when known, and the harness mode, name, version, roles, loops, rules, tools, and context categories actually available. Keep the returned `task_id` and `task_url` for subsequent turns. A retry uses the same request ID and identical payload.
 
-Use only explicitly available, content-free evidence for context:
+Record the user's stated criteria faithfully. Label additional inferred criteria in the evidence; do not present them as user-stated. Unknown model/version/resource values stay unknown. Record explicit `parent_task_id` for delegated work, without guessing relationships from directories or recent activity.
 
-- `model`: an explicitly supplied runtime model slug, or `unknown`.
-- `connections`: explicitly supplied broad tool-category counts, or `unknown`. Never include raw tool or connection names.
-- `tool_calls`: an explicitly supplied observed count, or `unknown`.
-- `elapsed_time`: an explicitly supplied measurement, or `unknown`; identify approximate measurements as approximate.
-- `tokens` and `cost`: use runtime-reported usage only when available; otherwise `unknown`. Do not tokenize a summary and present it as total run usage.
-- `loops` and `roles`: `unknown` unless they are explicitly visible in the conversation.
-- `review_id`: one stable caller-selected ID reused across turns in the active run. Pending links show the latest caller-supplied snapshot; saved reviews retain the snapshot that was rated.
+For a retrospective review, use `baseline_missing: true`. Do not reconstruct an earlier baseline as if it had been recorded at the start. A new independent job gets a new task ID; continuation and rework toward the same result keep the existing task.
 
-Do not inspect a transcript or collect user prompts, tool data, paths, or document contents. This manual workflow does not observe runtime events automatically. No metadata or review is uploaded.
+## Preserve useful evidence
 
-## 2. Create the one-click rating link
+Use `append_evidence` at meaningful milestones or changes, not after every token or tool call. Supply a stable `event_id`, kind (`milestone`, `setup`, `context`, `artifact`, `criteria`, or `resource`), source, and structured data. Retrying an event must not change its content. Sources are `user-stated`, `agent-reported`, `runtime-observed`, and `imported`.
 
-Call local MCP `request_rating` with `review_id`, `job_type`, the brief `task`, `action`, and `result`, `verification` (`verified`, `partial`, `unverified`, or `unknown`), and the known `context` and `resources` fields. Keep `job_type` to `writing`, `research`, `coding`, or `other`. Use cumulative metadata across turns and label elapsed time approximate. The tool starts the per-user loopback service on demand if needed, then returns the SAME loopback-only URL for a repeated `review_id` (earlier links show the newest snapshot while pending); it does not open the browser or save a review. The tool returns `expires_in_seconds: null`: links persist until the review data is explicitly removed, and need the local service running to open.
+Keep the starting goal, criteria, and setup intact. Changed criteria or setup belong in new evidence entries. Record accessible task briefs, instructions, reusable definitions, selected context, work logs, outputs, and artifacts within the user's task and access authorization. Do not sweep unrelated files or claim to preserve hidden reasoning. Do not send credentials, secrets, session tokens, or private keys to APR. If a source contains them, omit or redact those values before calling a tool. Rejection of a sensitive payload is a reason to remove the sensitive material, not bypass validation.
 
-End the assistant response with exactly one Markdown link, using the returned URL:
+Skill summaries are `agent-reported`. Only use `runtime-observed` for evidence actually supplied by the runtime; imported logs retain `imported`. Do not invent token totals, cost, compute time, corrections, or causal explanations. Keep parent and child resource measurements separate so totals are not doubled.
 
-`[⭐ Review this task](http://127.0.0.1:PORT/review/...)`
+## Finish and present the record
 
-Do not show the run card or ask for scores in chat. The user clicks the link to open the rating page, which already contains the run summary and available context. The first question is whether the agent finished the job; No reveals optional reason chips. Then the page collects four 1–5 star ratings: overall, quality, speed, and resource efficiency. There are no text fields. The page buttons are Save locally and Skip review; skipping discards the selections without saving.
+When delivering the result, call `finish_task` with the task ID, a stable event ID, result, and verification state. If interrupted, mark it interrupted. Finishing records the agent's delivery; it does not supply a human review or positive outcome. Continue useful work if APR is temporarily unavailable, and disclose the recording gap without inventing a successful receipt.
 
-If link creation fails, give a short error instead of fabricating a link. A saved review freezes the snapshot that was rated; rating again needs an explicit new `review_id`.
+End each authorized turn with the same returned task link:
 
-## 3. Save from the page only after submission
+`[⭐ Review this task](RETURNED_TASK_URL)`
 
-The rating page posts a submitted review to the local service, which stores it in the per-user SQLite database. Skip saves nothing. Do not call `record_review` after creating a link; no rating exists until the user submits in the page.
+Do not create an extra model continuation just to record or print the link. Modest MCP calls within normal turns are permitted. Runtime hooks remain optional and their coverage must be stated separately.
 
-Reusing a review ID with identical content is a safe retry; use a new ID for a different review.
+Only the human submits a review. The form requires outcome and overall stars; quality, speed, and resource-efficiency stars are visible but optional. Never turn an unreviewed task into success, infer missing ratings, or call a write-rating tool on the user's behalf.
 
-## 4. Local summary only on request
+## History and sharing
 
-Call `review_summary` only when the user asks about saved reviews. Describe results as a local-only count and averages from this computer. Do not present them as community ratings or infer why a setup scored better.
+Use `list_tasks` and `get_task` for explicitly requested local history analysis. Explain that supplying selected records to a cloud assistant crosses that provider's boundary even though APR stores them locally.
 
-This prototype stores reviews locally only. No Clerk, network service, public feed, or user account is part of it. Runtime hooks and automatic capture are not enabled: model and context values are caller-supplied, and missing token/cost numbers stay `unknown`.
+`prepare_share` creates a local preview only, after a saved review. Sharing is a separate human action: choose fields, redact individual values, inspect the exact snapshot, then explicitly publish through the community website. Private content starts unselected. Do not upload local history, publish a task, or update a previously shared snapshot merely because recording or review is enabled.
+
+If the connected MCP still exposes only `request_rating`, report that it is the legacy end-only integration and needs the updated bridge/reload. Do not claim a starting baseline or lifecycle coverage it cannot provide. Existing legacy review URLs remain valid.

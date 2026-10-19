@@ -140,7 +140,7 @@ class MigrationTransactionTest(unittest.TestCase):
         review_store.MIGRATIONS = real_migrations
         store = ReviewStore.open(data_dir)
         try:
-            self.assertEqual(store.migration_versions(), [1, 2, 3])
+            self.assertEqual(store.migration_versions(), [1, 2, 3, 4])
         finally:
             store.close()
 
@@ -168,10 +168,10 @@ class MigrationTransactionTest(unittest.TestCase):
         self.assertEqual(errors, [])
         store = ReviewStore.open(data_dir)
         try:
-            self.assertEqual(store.migration_versions(), [1, 2, 3])
+            self.assertEqual(store.migration_versions(), [1, 2, 3, 4])
             count = store._conn.execute(
                 "SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-            self.assertEqual(count, 3)
+            self.assertEqual(count, 4)
         finally:
             store.close()
 
@@ -333,7 +333,7 @@ class ColdOpenInitLockTest(unittest.TestCase):
                     barrier.wait(timeout=30)
                     store = ReviewStore.open(data_dir)
                     try:
-                        self.assertEqual(store.migration_versions(), [1, 2, 3])
+                        self.assertEqual(store.migration_versions(), [1, 2, 3, 4])
                     finally:
                         store.close()
                 except Exception as exc:  # noqa: BLE001 - collected, then failed
@@ -350,10 +350,10 @@ class ColdOpenInitLockTest(unittest.TestCase):
             self.assertEqual(errors, [])
             store = ReviewStore.open(data_dir)
             try:
-                self.assertEqual(store.migration_versions(), [1, 2, 3])
+                self.assertEqual(store.migration_versions(), [1, 2, 3, 4])
                 count = store._conn.execute(
                     "SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-                self.assertEqual(count, 3)
+                self.assertEqual(count, 4)
             finally:
                 store.close()
             self._assert_private_layout(data_dir)
