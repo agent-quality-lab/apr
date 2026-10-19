@@ -72,7 +72,7 @@ no rating and leaves the job pending.
 
 ## Task recording and local workspace
 
-The MCP bridge also exposes `start_task`, `append_evidence`, `finish_task`,
+The MCP bridge also exposes `get_setup`, `start_task`, `append_evidence`, `finish_task`,
 `get_task`, `list_tasks`, and `prepare_share`. These tools record one task's
 caller-supplied goal and success criteria, source-labeled evidence, an
 agent-reported result, and a separate human review. `start_task` returns a
@@ -222,10 +222,13 @@ before every applying import. The original file is never modified or deleted.
 
 - Pending cards and saved ratings persist until the data directory is
   explicitly deleted. There is no retention job and no remote copy.
-- Manual review cards use caller-supplied model/context values. Opt-in Codex
-  cards show separately labeled local hook observations; neither path captures
-  prompt/tool contents or estimates token/cost values, which stay `unknown`.
-- No auth, cloud, sharing, or website changes are part of this milestone.
+- Legacy cards use caller-supplied metadata, and the optional Codex hook still
+  records content-free receipts. The new task lifecycle can preserve rich authorized
+  task context with provenance. No path invents token/cost measurements or captures
+  hidden reasoning. See [task recording](task-recording.md).
+- The local service never authenticates a community account or uploads records.
+  It exports selected approved snapshots for the separate community client.
+  Live hosted migrations, OAuth configuration, and deployment are separate steps.
 - Isolated rendered desktop/mobile QA is recorded in the verification report.
   A real multi-turn Codex walkthrough remains pending the reviewed installation.
 

@@ -4,7 +4,7 @@ APR's recording harness is separate from the harness that directs execution. Cho
 
 ## Lifecycle
 
-Use `start_task` before work, `append_evidence` for meaningful milestones or changes, and `finish_task` when delivering a result. Keep the returned task ID and link across turns. One automation or a long conversation can each be one task; new independent work gets another record. `list_tasks` and `get_task` expose selected private history to a connected assistant.
+Read `get_setup` for the recording-mode preference, then use `start_task` before work, `append_evidence` for meaningful milestones or changes, and `finish_task` when delivering a result. Keep the returned task ID and link across turns. One automation or a long conversation can each be one task; new independent work gets another record. `list_tasks` and `get_task` expose selected private history to a connected assistant.
 
 The baseline records the goal, success criteria, runtime/model and harness version. Later changes append evidence rather than replacing it. Retrospective tasks and migrated reviews disclose missing baseline information. Stable request/event IDs make exact retries safe; changed content under the same ID is rejected.
 
@@ -24,7 +24,7 @@ The task link stays stable. The review shows starting goal and delivered result,
 
 ## Sharing
 
-Sharing requires a saved human review. `prepare_share` creates a local preview; it never publishes or uploads. Select only the additional fields to share and redact individual values. The structural core contains category, human outcome/ratings, generic harness structure/version, and coverage. Private content starts unselected.
+Sharing requires a saved human review. `prepare_share` creates a local preview; it never publishes or uploads. Select only the additional fields to share (including model/setup when desired) and redact individual values. The structural core contains category, human outcome/ratings, generic harness structure/version, and coverage. Private content starts unselected.
 
 The workspace downloads a frozen approved JSON snapshot. Open the community publishing page, sign in with GitHub, select that snapshot, inspect the exact public preview, and explicitly publish. Downloading, loading a file, creating a preview or signing in alone does not publish. No private log contents are put into the destination URL.
 
@@ -36,4 +36,4 @@ This file-import handoff avoids handing a local API credential to a remote websi
 
 Small lifecycle calls within normal turns are permitted. Do not create another model continuation just for APR. Runtime availability, bridge reachability, lifecycle identity, native measurements and link presentation must each be verified; a synthetic test is not native-runtime acceptance.
 
-The maintained skill is in `skill/agent-performance-review/SKILL.md`. Updating source does not update an already-running MCP process or install the skill into every runtime. Keep those deployment steps separate and reload the host after a reviewed installation. Community configuration, tracked hosted migrations and real GitHub OAuth acceptance are also separate from local source verification. The existing hosting budget remains $0.
+The maintained skill is in `skill/agent-performance-review/SKILL.md`. Updating source does not update an already-running MCP process or install the skill into every runtime. Stop and restart the detached service before reloading an updated bridge so it serves the new API and applies the checked-in migration. Keep those deployment steps separate and reload the host after a reviewed installation. Community configuration, tracked hosted migrations and real GitHub OAuth acceptance are also separate from local source verification. The existing hosting budget remains $0.

@@ -9,9 +9,9 @@ APR records a job aimed at a result. A single automation or a conversation spann
 
 ## Start before working
 
-When APR recording is enabled, call `start_task` within the normal turn, before substantive work. Supply a stable `request_id`, title, category (`coding`, `writing`, `research`, or `other`), goal, success criteria, runtime/model when known, and the harness mode, name, version, roles, loops, rules, tools, and context categories actually available. Keep the returned `task_id` and `task_url` for subsequent turns. A retry uses the same request ID and identical payload.
+When APR recording is enabled, read `get_setup` once for the saved recording-mode preference, then call `start_task` within the normal turn, before substantive work. Setup preferences do not prove runtime installation or capabilities. Supply a stable `request_id`, title, category (`coding`, `writing`, `research`, or `other`), goal, success criteria, runtime/model when known, and the harness mode, name, version, roles, loops, rules, tools, and context categories actually available. Keep the returned `task_id` and `task_url` for subsequent turns. A retry uses the same request ID and identical payload.
 
-Record the user's stated criteria faithfully. Label additional inferred criteria in the evidence; do not present them as user-stated. Unknown model/version/resource values stay unknown. Record explicit `parent_task_id` for delegated work, without guessing relationships from directories or recent activity.
+Record the user's stated criteria faithfully. Set `baseline_source` to `user-stated` only when the goal and criteria faithfully reflect explicit user requirements; otherwise use `agent-reported`. Label additional inferred criteria in the evidence; do not present them as user-stated. Unknown model/version/resource values stay unknown. Record explicit `parent_task_id` for delegated work, without guessing relationships from directories or recent activity.
 
 For a retrospective review, use `baseline_missing: true`. Do not reconstruct an earlier baseline as if it had been recorded at the start. A new independent job gets a new task ID; continuation and rework toward the same result keep the existing task.
 
@@ -25,7 +25,7 @@ Skill summaries are `agent-reported`. Only use `runtime-observed` for evidence a
 
 ## Finish and present the record
 
-When delivering the result, call `finish_task` with the task ID, a stable event ID, result, and verification state. If interrupted, mark it interrupted. Finishing records the agent's delivery; it does not supply a human review or positive outcome. Continue useful work if APR is temporarily unavailable, and disclose the recording gap without inventing a successful receipt.
+When delivering the result, call `finish_task` with the task ID, a stable event ID, result, and available verification details as an object. If interrupted, mark it interrupted. Finishing records the agent's delivery; it does not supply a human review or positive outcome. Continue useful work if APR is temporarily unavailable, and disclose the recording gap without inventing a successful receipt.
 
 End each authorized turn with the same returned task link:
 

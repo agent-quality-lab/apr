@@ -1,4 +1,5 @@
 """Task lifecycle, idempotency, privacy, and legacy migration contracts."""
+import json
 import unittest
 import math
 
@@ -116,7 +117,7 @@ class TaskLifecycleTest(unittest.TestCase):
         self.assertEqual(details["task_text"]["result"], "Delivered")
         self.assertEqual(details["context"]["evidence"][0]["data"]["preference"], "brief")
         self.assertEqual(details["artifacts"][0]["data"]["name"], "final.txt")
-        self.assertEqual(details["artifacts"][0]["data"]["path"], "[local path withheld]")
+        self.assertNotIn("path", details["artifacts"][0]["data"])
         self.assertNotIn("setup", details)
         setup_preview = self.tasks.prepare_share(task["task_id"], ["setup.model"])
         self.assertEqual(setup_preview["payload"]["details"], {"setup": {"model": "model-x"}})
@@ -165,6 +166,101 @@ class TaskLifecycleTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.tasks.start_task(task_payload(context={"user-stated": {
                 "api_key": "sk-example-secret-value"}}))
+        with self.assertRaises(ValidationError):
+            self.tasks.start_task(task_payload(request_id="bad-auth", context={
+                "user-stated": {"authorization": "Bearer secret-value-here"}}))
+        self.assertEqual(self.tasks.start_task(task_payload(
+            request_id="author-prose", context={"user-stated": {
+                "author": "author says hello",
+                "authentication_overview": "Authentication overview"}}))[
+            "context"]["user-stated"]["authentication_overview"], "Authentication overview")
+
+    def test_share_drops_account_and_runtime_auth_identifiers(self):
+        task = self.tasks.start_task(task_payload(
+            request_id="share-identifiers",
+            context={"user-stated": {"account_id": "business-account",
+                                     "accountId": "camel-account",
+                                     "account_uuid": "uuid-account",
+                                     "author": "ordinary prose",
+                                     "session_id": "runtime-session",
+                                     "service_auth_id": "service-auth"}}))
+        finished = self.tasks.finish_task(task["task_id"], "identifier-finish", "Done")
+        self.tasks.save_review(task["task_id"], {"completion": "yes",
+            "ratings": {"overall": 4}, "gap_reasons": [], "revision": finished["revision"]})
+        private = self.tasks.get_task(task["task_id"])
+        self.assertEqual(private["context"]["user-stated"]["account_id"], "business-account")
+        preview = self.tasks.prepare_share(task["task_id"], ["context"])
+        exported = json.dumps(preview["payload"]["details"]["context"])
+        for identifier in ("business-account", "camel-account", "uuid-account",
+                           "runtime-session", "service-auth"):
+            self.assertNotIn(identifier, exported)
+        self.assertIn("ordinary prose", exported)
+
+    def test_share_filter_matches_community_private_key_policy(self):
+        context = {"id": "private-id", "uuid": "private-uuid",
+                   "user_id": "private-user", "oauth": "private-oauth",
+                   "email": "private@example.test", "author": "author text",
+                   "authentication_doc": "Authentication overview",
+                   "tokens": {"value": 12, "unit": "tokens"}}
+        task = self.tasks.start_task(task_payload(request_id="community-filter",
+                                                  context={"user-stated": {"safe": "baseline"}}))
+        # Older local records may contain metadata fields that current writers reject.
+        stored = self.tasks._load(task["task_id"])
+        stored["context"] = {"user-stated": context}
+        self.tasks._save(stored)
+        self.assertEqual(self.tasks.get_task(task["task_id"])["context"]["user-stated"], context)
+        finished = self.tasks.finish_task(task["task_id"], "community-finish", "Done")
+        self.tasks.save_review(task["task_id"], {"completion": "yes",
+            "ratings": {"overall": 4}, "gap_reasons": [], "revision": finished["revision"]})
+
+        default_preview = self.tasks.prepare_share(task["task_id"])
+        self.assertNotIn("context", default_preview["payload"]["details"])
+        self.assertIn("context", default_preview["payload"]["withheld"])
+        preview = self.tasks.prepare_share(task["task_id"], ["context"])
+        exported = json.dumps(preview["payload"]["details"]["context"])
+        for private_value in ("private-id", "private-uuid", "private-user",
+                              "private-oauth", "private@example.test"):
+            self.assertNotIn(private_value, exported)
+        for shared_value in ("author text", "Authentication overview", '"value": 12', '"unit": "tokens"'):
+            self.assertIn(shared_value, exported)
+
+    def test_share_preview_created_at_is_frozen_across_restart(self):
+        task = self.tasks.start_task(task_payload(request_id="frozen-created-at"))
+        finished = self.tasks.finish_task(task["task_id"], "frozen-finish", "Done")
+        self.tasks.save_review(task["task_id"], {"completion": "yes",
+            "ratings": {"overall": 4}, "gap_reasons": [], "revision": finished["revision"]})
+        preview = self.tasks.prepare_share(task["task_id"], ["task_text"])
+        self.assertTrue(preview.get("created_at"))
+        data_dir = self.store.data_dir
+        self.store.close()
+        self.store = ReviewStore.open(data_dir)
+        self.tasks = self.store.tasks
+        frozen = self.tasks.get_share_preview(preview["preview_id"])
+        self.assertEqual(frozen["created_at"], preview["created_at"])
+        self.assertEqual(frozen["payload"], preview["payload"])
+
+    def test_list_tasks_returns_private_safe_summaries_while_get_task_is_full(self):
+        sentinel = "private-context-sentinel-9d3"
+        task = self.tasks.start_task(task_payload(
+            request_id="private-list", goal="Sensitive goal sent only to get_task",
+            context={"user-stated": {"private_note": sentinel}},
+            harness={"mode": "existing", "name": "APR", "version": "1",
+                     "roles": ["agent"], "loops": ["edit"], "rules": ["preserve"],
+                     "tools": ["shell"], "context_categories": ["repo"],
+                     "definitions": {"private_setting": sentinel}}))
+        self.tasks.append_evidence(task["task_id"], "private-resource", "resource",
+                                   "runtime-observed", {"cost": {"value": 1.25, "unit": "USD"}})
+        full = self.tasks.get_task(task["task_id"])
+        summaries = self.tasks.list_tasks()
+        summary = next(item for item in summaries if item["task_id"] == task["task_id"])
+        encoded = json.dumps(summary)
+        self.assertNotIn(sentinel, encoded)
+        self.assertNotIn("Sensitive goal sent only to get_task", encoded)
+        self.assertNotIn("context", summary)
+        self.assertNotIn("definitions", json.dumps(summary.get("harness", {})))
+        self.assertEqual(summary["resources"]["resource_0"]["cost"]["value"], 1.25)
+        self.assertEqual(full["context"]["user-stated"]["private_note"], sentinel)
+        self.assertEqual(full["harness"]["definitions"]["private_setting"], sentinel)
 
     def test_parent_link_and_criteria_revisions_are_explicit(self):
         parent = self.tasks.start_task(task_payload(request_id="parent"))
