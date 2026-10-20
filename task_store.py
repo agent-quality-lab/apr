@@ -131,7 +131,7 @@ class TaskStore:
     def append_evidence(self, task_id, event_id, kind, source, data):
         _validate_task_id(task_id)
         event = validate_evidence(event_id, kind, source, data)
-        payload = _dumps(event)
+        payload = _dumps({**event, "operation": "append_evidence"})
         def run():
             task = self._load(task_id)
             if task is None:
@@ -139,8 +139,7 @@ class TaskStore:
             existing = self.db.execute("SELECT payload_json FROM task_events WHERE task_id=? AND event_id=?",
                                        (task_id, event_id)).fetchone()
             if existing:
-                if existing[0] != payload:
-                    raise ValidationError("event_id was already used with different evidence")
+                _check_event_replay(existing[0], event, "append_evidence", task)
                 return {"task_id": task_id, "event_id": event_id,
                         "status": "already_recorded", "revision": task["revision"]}
             now = _now()
@@ -175,7 +174,7 @@ class TaskStore:
         event = validate_evidence(event_id, "milestone", "agent-reported",
                                   {"result": result, "verification": verification,
                                    "interrupted": interrupted})
-        payload = _dumps(event)
+        payload = _dumps({**event, "operation": "finish_task"})
         def run():
             task = self._load(task_id)
             if task is None:
@@ -184,8 +183,7 @@ class TaskStore:
                 "SELECT payload_json FROM task_events WHERE task_id=? AND event_id=?",
                 (task_id, event_id)).fetchone()
             if existing:
-                if existing[0] != payload:
-                    raise ValidationError("event_id was already used with different evidence")
+                _check_event_replay(existing[0], event, "finish_task", task)
                 return self._result(task)
             now = _now()
             self.db.execute("INSERT INTO task_events VALUES(?,?,?,?,?,?)",
@@ -472,7 +470,28 @@ def _validate_task_id(task_id):
         raise ValidationError("task_id must be a valid task identifier")
 
 
-_LOCAL_PATH = re.compile(r"(?:^|\s)(?:/Users/|/home/|/private/|/Volumes/|[A-Za-z]:\\)")
+def _check_event_replay(payload, event, operation, task):
+    recorded = json.loads(payload)
+    recorded_operation = recorded.pop("operation", None)
+    if recorded_operation is None:
+        # Old finish and append calls could serialize identically. Only infer an
+        # append when a finish could not have produced the row; never guess.
+        finish_shaped = (recorded.get("kind") == "milestone"
+                         and recorded.get("source") == "agent-reported"
+                         and set(recorded.get("data", {})) ==
+                         {"result", "verification", "interrupted"})
+        if finish_shaped and task["status"] != "in_progress":
+            raise ValidationError("legacy event operation is ambiguous; use a new event_id")
+        recorded_operation = "append_evidence"
+    if recorded_operation != operation or _dumps(recorded) != _dumps(event):
+        raise ValidationError("event_id was already used with different evidence or operation")
+
+
+_FILE_URI = re.compile(r"\bfile:/", re.I)
+_LOCAL_PATH = re.compile(
+    r"(?<![A-Za-z0-9_./\\])(?:/(?:Users|home|private|Volumes|tmp|var|etc|opt|root|mnt|srv|usr)(?:/|$)|[A-Za-z]:[/\\]|\\\\[^\\\s]+\\)",
+    re.I)
+_NONLOCAL_URL = re.compile(r"\b(?!file:)[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"']+", re.I)
 _COMMUNITY_PRIVATE_KEY_BOUNDARY = re.compile(
     r"(?:^|_)(?:local|private|owner|user|email|secret|password|credential|authorization|authcode|session|reviewid|taskid|eventid|requestid|filepath|path)(?:_|$)",
     re.I)
@@ -510,7 +529,8 @@ def _sanitize_share(value, key=None):
         return result
     if isinstance(value, list):
         return [_sanitize_share(v) for v in value]
-    if isinstance(value, str) and _LOCAL_PATH.search(value):
+    if isinstance(value, str) and (
+            _FILE_URI.search(value) or _LOCAL_PATH.search(_NONLOCAL_URL.sub("", value))):
         return "[local path withheld]"
     return value
 

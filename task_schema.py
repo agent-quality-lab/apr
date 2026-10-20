@@ -29,7 +29,7 @@ SECRET_KEY_SUFFIXES = ("apikey", "accesskey", "privatekey", "secret", "credentia
                        "credentials", "accesstoken", "refreshtoken", "idtoken",
                        "authtoken", "sessiontoken", "token", "authorization",
                        "bearer", "auth")
-SECRET_VALUE = re.compile(r"(?:\bsk-[A-Za-z0-9_-]{12,}|\bgh[pousr]_[A-Za-z0-9_]{12,}|\bgithub_pat_[A-Za-z0-9_]{12,}|\bxox[baprs]-[A-Za-z0-9-]{12,}|\bBearer\s+[A-Za-z0-9._~+/-]{12,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})", re.I)
+SECRET_VALUE = re.compile(r"(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,}|sb_secret_[A-Za-z0-9_-]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|Bearer\s+\S+|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})", re.I)
 MAX_JSON_BYTES = 65536
 
 

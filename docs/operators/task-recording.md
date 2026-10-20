@@ -32,6 +32,8 @@ The website validates the selected payload again. A public page is an immutable 
 
 This file-import handoff avoids handing a local API credential to a remote website or exposing the entire local store through cross-origin browser access. Direct authenticated transfer can be added separately without changing the selected-snapshot contract.
 
+Verification covered local lifecycle tests, the separate community migration/RLS and UI tests, and an isolated illustrative browser fixture; it did not verify hosted publishing, OAuth, live MCP, or native runtime measurement. See [task-recording verification](../verification/task-recording-standard.md) for the tested scope and limits.
+
 ## Support and rollout
 
 Small lifecycle calls within normal turns are permitted. Do not create another model continuation just for APR. Runtime availability, bridge reachability, lifecycle identity, native measurements and link presentation must each be verified; a synthetic test is not native-runtime acceptance.

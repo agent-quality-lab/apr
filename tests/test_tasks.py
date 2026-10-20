@@ -96,6 +96,164 @@ class TaskLifecycleTest(unittest.TestCase):
                 self.tasks.append_evidence(task["task_id"], "bad-" + str(len(str(bad))),
                                            "resource", "agent-reported", bad)
 
+    def test_finish_and_append_reject_identical_cross_operation_ids_after_restart(self):
+        data = {"result": "Done", "verification": None, "interrupted": False}
+        for first in ("append", "finish"):
+            with self.subTest(first=first):
+                task = self.tasks.start_task(task_payload(request_id="collision-" + first))
+                task_id = task["task_id"]
+                if first == "append":
+                    self.tasks.append_evidence(task_id, "finish", "milestone", "agent-reported", data)
+                else:
+                    self.tasks.finish_task(task_id, "finish", "Done")
+                data_dir = self.store.data_dir
+                self.store.close()
+                self.store = ReviewStore.open(data_dir)
+                self.tasks = self.store.tasks
+                before = self.tasks.get_task(task_id)
+                with self.assertRaises(ValidationError):
+                    if first == "append":
+                        self.tasks.finish_task(task_id, "finish", "Done")
+                    else:
+                        self.tasks.append_evidence(task_id, "finish", "milestone", "agent-reported", data)
+                self.assertEqual(self.tasks.get_task(task_id), before)
+
+    def test_finish_retries_preserve_frozen_review_and_post_review_evidence(self):
+        task = self.tasks.start_task(task_payload(request_id="finish-retry-review"))
+        task_id = task["task_id"]
+        self.tasks.finish_task(task_id, "old", "Partial", interrupted=True)
+        finished = self.tasks.finish_task(task_id, "final", "Done")
+        reviewed = self.tasks.save_review(task_id, {
+            "completion": "yes", "ratings": {"overall": 4}, "gap_reasons": [],
+            "revision": finished["revision"]})
+        self.tasks.finish_task(task_id, "later", "Follow-up")
+        before = self.tasks.get_task(task_id)
+        for event_id, result, interrupted in (("old", "Partial", True),
+                                               ("final", "Done", False),
+                                               ("later", "Follow-up", False)):
+            self.assertEqual(self.tasks.finish_task(task_id, event_id, result,
+                                                   interrupted=interrupted), before)
+        self.assertEqual(before["review"], reviewed["review"])
+        self.assertEqual(before["evidence"], reviewed["evidence"])
+        self.assertEqual(before["revision"], reviewed["revision"])
+        self.assertEqual(before["result"], "Done")
+        with self.assertRaises(ValidationError):
+            self.tasks.append_evidence(task_id, "later", "milestone", "agent-reported",
+                {"result": "Follow-up", "verification": None, "interrupted": False})
+
+    def test_legacy_append_finish_collision_is_rejected_without_modifying_record(self):
+        task = self.tasks.start_task(task_payload(request_id="legacy-collision"))
+        task_id = task["task_id"]
+        event = {"event_id": "finish", "kind": "milestone", "source": "agent-reported",
+                 "data": {"result": "Done", "verification": None, "interrupted": False}}
+        # Synthetic pre-discriminator row, not real user data.
+        self.tasks.db.execute("INSERT INTO task_events VALUES(?,?,?,?,?,?)",
+            (task_id, "finish", "milestone", "agent-reported",
+             json.dumps(event, sort_keys=True, separators=(",", ":")), task["created_at"]))
+        stored = self.tasks._load(task_id)
+        stored["evidence"].append({**event, "created_at": task["created_at"]})
+        stored["revision"] += 1
+        self.tasks._save(stored)
+        before = self.tasks.get_task(task_id)
+        with self.assertRaises(ValidationError):
+            self.tasks.finish_task(task_id, "finish", "Done")
+        self.assertEqual(self.tasks.get_task(task_id), before)
+        self.assertEqual(self.tasks.append_evidence(task_id, "finish", "milestone",
+            "agent-reported", event["data"])["status"], "already_recorded")
+
+    def test_share_withholds_file_uris_and_punctuation_delimited_local_paths(self):
+        private_values = [
+            "file:///Users/alice/private/repo/report.txt",
+            "file:/tmp/private/report.txt",
+            "https://example.test/redirect?target=file:///Users/alice/report.txt",
+            "(file:///C:/Users/alice/private/report.txt)",
+            "report=(/Users/alice/private/report.txt)",
+            'report="/home/alice/private/report.txt"',
+            "report:/private/tmp/report.txt",
+            "[/Volumes/private/report.txt]",
+            r"report=(C:\Users\alice\private\report.txt)",
+            "report=C:/Users/alice/private/report.txt",
+            r"report=\\server\private\report.txt",
+        ]
+        task = self.tasks.start_task(task_payload(request_id="private-paths"))
+        for index, value in enumerate(private_values):
+            self.tasks.append_evidence(task["task_id"], "artifact-" + str(index),
+                "artifact", "agent-reported", {"uri": value})
+        safe = {"uri": "https://example.test/Users/alice/report.txt",
+                "note": "Ordinary text about / resources and C: drive",
+                "link": "https://example.test/files?q=/home/example"}
+        self.tasks.append_evidence(task["task_id"], "safe", "artifact", "agent-reported", safe)
+        finished = self.tasks.finish_task(task["task_id"], "finish", "Done")
+        self.tasks.save_review(task["task_id"], {"completion": "yes",
+            "ratings": {"overall": 4}, "gap_reasons": [], "revision": finished["revision"]})
+        preview = self.tasks.prepare_share(task["task_id"], ["artifacts"])
+        artifacts = preview["payload"]["details"]["artifacts"]
+        for artifact, value in zip(artifacts, private_values):
+            with self.subTest(value=value):
+                self.assertEqual(artifact["data"]["uri"], "[local path withheld]")
+                self.assertNotIn(value, json.dumps(preview["payload"]))
+        self.assertEqual(artifacts[-1]["data"], safe)
+        self.assertEqual(self.tasks.get_task(task["task_id"])["evidence"][0]["data"]["uri"],
+                         private_values[0])
+        self.assertEqual(self.tasks.get_share_preview(preview["preview_id"])["payload"],
+                         preview["payload"])
+
+    def test_community_secret_values_rejected_on_new_writes(self):
+        values = ["sb_secret_" + "a" * 20, "prefix:sb_secret_" + "b" * 12,
+                  "Bearer short", "prefix:github_pat_" + "c" * 12,
+                  "prefix:sk-" + "d" * 16, "xoxb-" + "e" * 12,
+                  "eyJ" + "f" * 20 + "." + "g" * 10 + "." + "h" * 10,
+                  "-----BEGIN PRIVATE KEY-----"]
+        for index, value in enumerate(values):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                self.tasks.start_task(task_payload(request_id="secret-" + str(index),
+                    context={"user-stated": {"note": value}}))
+        self.assertEqual(self.tasks.list_tasks(), [])
+        task = self.tasks.start_task(task_payload(request_id="secret-evidence"))
+        before = self.tasks.get_task(task["task_id"])
+        with self.assertRaises(ValidationError):
+            self.tasks.append_evidence(task["task_id"], "secret-event", "context",
+                "agent-reported", {"note": values[0]})
+        with self.assertRaises(ValidationError):
+            self.tasks.finish_task(task["task_id"], "secret-finish", values[0])
+        self.assertEqual(self.tasks.get_task(task["task_id"]), before)
+
+    def test_imported_legacy_secret_values_are_sanitized(self):
+        value = "sb_secret_" + "syntheticvalue12345678"
+        card = json.loads(json.dumps(CARD))
+        card["context"]["note"] = value
+        self.store.request_job(card)
+        saved = full_payload()
+        saved["context"] = card["context"]
+        self.store.save_rating(saved)
+        data_dir = self.store.data_dir
+        self.store.close()
+        self.store = ReviewStore.open(data_dir)
+        self.tasks = self.store.tasks
+        imported = self.tasks.get_task("legacy:job-001")
+        self.assertNotIn(value, json.dumps(imported))
+        self.assertIn("[redacted imported value]", json.dumps(imported))
+
+    def test_ambiguous_legacy_finish_shaped_ids_fail_closed_without_mutation(self):
+        task = self.tasks.start_task(task_payload(request_id="ambiguous-legacy"))
+        task_id = task["task_id"]
+        finished = self.tasks.finish_task(task_id, "old-finish", "Done")
+        row = self.tasks.db.execute(
+            "SELECT payload_json FROM task_events WHERE task_id=? AND event_id=?",
+            (task_id, "old-finish")).fetchone()
+        payload = json.loads(row[0])
+        payload.pop("operation", None)
+        self.tasks.db.execute(
+            "UPDATE task_events SET payload_json=? WHERE task_id=? AND event_id=?",
+            (json.dumps(payload, sort_keys=True, separators=(",", ":")), task_id, "old-finish"))
+        # Both operations could have produced this old row. Never guess ownership.
+        with self.assertRaisesRegex(ValidationError, "ambiguous"):
+            self.tasks.finish_task(task_id, "old-finish", "Done")
+        with self.assertRaisesRegex(ValidationError, "ambiguous"):
+            self.tasks.append_evidence(task_id, "old-finish", "milestone", "agent-reported",
+                {"result": "Done", "verification": None, "interrupted": False})
+        self.assertEqual(self.tasks.get_task(task_id), finished)
+
     def test_share_projects_and_redacts_array_paths_and_includes_context_evidence_and_result(self):
         task = self.tasks.start_task(task_payload())
         self.tasks.append_evidence(task["task_id"], "context-1", "context",
