@@ -1,3 +1,4 @@
 interface:
   display_name: "Agent Performance Review"
-  short_description: "Help with Agent Performance Review tasks"
+  short_description: "Record a task locally and get a link for your own review"
+  default_prompt: "Use $agent-performance-review to record this task, then list three acceptance criteria for a password reset form."

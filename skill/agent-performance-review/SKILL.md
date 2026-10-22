@@ -1,9 +1,13 @@
 ---
 name: agent-performance-review
-description: "Use when the user says 'review this task', asks to rate the result, or explicitly enables APR recording for a job."
+description: "Record a task with APR when the user invokes $agent-performance-review, asks to record or track it, or says review this task; continue recording the same job until delivery."
 ---
 
 # Agent Performance Review
+
+## First run
+
+Explicit invocation (for example `$agent-performance-review`, or "record this task with APR") turns recording on for the task the user names in that message. Before doing the task: call `get_setup`, then `start_task`, then do the work. If the invocation names no task, start recording the next task the user gives. On every later turn of the same task, reuse the stored `task_id` and `task_url`; do not call `start_task` again with a new request ID. If the APR tools (`start_task`, `append_evidence`, `finish_task`) are not available in this session, say the MCP server is not registered or the host needs a reload, then do the task without claiming it was recorded.
 
 APR records a job aimed at a result. A single automation or a conversation spanning fifty messages can each be one task. A chat can contain several tasks. The recording harness complements an existing execution harness; newcomer mode uses the same record format without requiring an existing harness.
 
