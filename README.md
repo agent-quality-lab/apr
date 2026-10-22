@@ -20,17 +20,25 @@ Public source for the local runtime integrations and review flow. The code is ex
 
 ## Current status
 
-The Codex review hooks were removed from the active user configuration. This change does not install or reload runtime registrations or the maintained user skill. An already-running bridge/service must be restarted after a reviewed source update. The native capture adapter is an opt-in local experiment and has synthetic fixture coverage only. It does not add an assistant footer, automatic link presentation, another model turn, or model context. Actual Codex resume identity continuity and hook coverage remain unverified.
+The Codex review hooks were removed from the active user configuration. This source does not install itself or reload runtime registrations; the quickstart's steps do. An already-running bridge/service must be restarted after a reviewed source update. The native capture adapter is an opt-in local experiment and has synthetic fixture coverage only. It does not add an assistant footer, automatic link presentation, another model turn, or model context. Actual Codex resume identity continuity and hook coverage remain unverified.
 
 The local flow keeps task logs on the user's computer. The task lifecycle may preserve authorized task briefs, instructions, definitions, selected context, work logs, results, and artifacts, with source labels and coverage gaps. Credentials are excluded. The older optional Codex hook collector still captures content-free receipts only; it does not measure token use or cost. No capture path claims access to hidden reasoning.
 
 The task-recording interface adds a separate lifecycle: `start_task` records the caller-supplied baseline, `append_evidence` adds source-labeled events, `finish_task` records the result without inventing a human rating, and the local workspace collects a review. Reusing a task request or evidence event is idempotent only when the original content is unchanged. Legacy reviews are imported into the task view with a missing baseline clearly marked. `prepare_share` creates a frozen preview from explicitly selected fields; it does not publish or upload anything.
 
-## Local MCP setup
+<a id="local-mcp-setup"></a>
 
-The MCP server uses Python's standard library. Configure an MCP-capable host to launch `mcp_server.py` as a stdio server, using the absolute path to this checkout. On the first tool call the bridge starts the per-user loopback service on demand; the rating page is served while that service is running.
+## Local alpha quickstart (Codex on macOS)
 
-For Codex, the canonical install (bridge registration verified against `codex mcp add --help`, full skill copy, no `~/.codex` edits here) is documented once in `docs/operators/local-mcp.md` under "Manual Codex integration"; this README carries no second copy.
+Requires macOS, Python 3 (tested with 3.14.2) and the Codex CLI. Windows is not supported; Linux and other hosts are untested. No account is needed.
+
+1. Clone `https://github.com/agent-quality-lab/apr.git` to a normal folder.
+2. Register `mcp_server.py` with `codex mcp add` and copy the full `skill/agent-performance-review` folder into `~/.agents/skills/` (back up any older copy first; never delete it blindly).
+3. Restart Codex and start a task with `Use $agent-performance-review to record this task, then ...`.
+
+The exact copyable commands, expected result, upgrade, restart and uninstall steps are in the canonical guide: [Codex on macOS quickstart](docs/operators/local-mcp.md#codex-on-macos-quickstart). `python3 scripts/smoke_local_alpha.py` runs a synthetic protocol check in a temporary data directory.
+
+The MCP server uses Python's standard library. On the first tool call the bridge starts the per-user loopback service on demand; the review pages are served while that service is running.
 
 Service control and data locations are documented in `docs/operators/local-mcp.md`. The default data directory lives outside the checkout (`~/Library/Application Support/Agent Performance Review/` on macOS, XDG equivalent elsewhere); `APR_DATA_DIR` overrides it. `request_rating` returns the same `rating_url` for a repeated `review_id` and `expires_in_seconds: null`. `hooks.codex.example.json` is an example only; activation requires a deliberate local config edit and a reviewed real-runtime acceptance run. Use `python3 /absolute/path/to/codex_capture.py list` to print each captured chat's own stable review URL. The collector never chooses a global latest chat.
 
