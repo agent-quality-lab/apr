@@ -2,6 +2,10 @@
 
 Public source for the local runtime integrations and review flow. The code is experimental; it is published for inspection and development, not as a supported or operational release.
 
+## Review a task from Codex desktop
+
+With the APR skill and local MCP connected, include **“Review this task”** with your request, or say it after a result is delivered. Codex records that job in the current chat. Its final **⭐ Rate this task** link opens the local form with the goal, criteria and result. Choose whether the result met the goal and give it 1–5 stars overall. Each independent job needs its own opt-in. This flow uses the shared loopback service and does not run a second model session or a file observer.
+
 ## Contents
 
 - `mcp_server.py` — local MCP stdio bridge (thin client of the loopback service).

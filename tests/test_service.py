@@ -736,11 +736,11 @@ class UIStaticTest(unittest.TestCase):
         self.assertIn("api/review", js)
         self.assertIn("api/submit", js)
 
-    def test_skill_link_text_and_no_expiry_claim(self):
+    def test_skill_rating_link_and_no_expiry_claim(self):
         with open(os.path.join(REPO_ROOT, "skill", "agent-performance-review",
                                "SKILL.md"), encoding="utf-8") as handle:
             skill = handle.read()
-        self.assertIn("⭐ Review this task", skill)
+        self.assertIn("⭐ Rate this task", skill)
         self.assertNotIn("24 hour", skill)
 
 

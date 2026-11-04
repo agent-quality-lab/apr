@@ -222,7 +222,9 @@ def review_summary(args):
 
 def start_task(args):
     task = service_call("start_task", args)
+    workspace = task["task_url"].partition("#")[0]
     return {"task_id": task["task_id"], "task_url": task["task_url"],
+            "review_url": workspace + "#review=" + task["task_id"],
             "revision": task["revision"]}
 
 

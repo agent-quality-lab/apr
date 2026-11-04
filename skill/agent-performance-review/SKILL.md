@@ -1,15 +1,23 @@
 ---
 name: agent-performance-review
-description: "Use when APR recording is enabled for a task, automation, or ongoing job, or when the user asks to review an agent's work."
+description: "Use when the user says 'review this task', asks to rate the result, or explicitly enables APR recording for a job."
 ---
 
 # Agent Performance Review
 
 APR records a job aimed at a result. A single automation or a conversation spanning fifty messages can each be one task. A chat can contain several tasks. The recording harness complements an existing execution harness; newcomer mode uses the same record format without requiring an existing harness.
 
+## One local link from a desktop chat
+
+Treat “review this task” as opt-in for the current job only. A quoted example, a question about APR, or an ordinary request for code review does not enable it. If the chat has no identifiable task, ask what result the user wants reviewed before creating a record. A new job needs its own opt-in.
+
+Use the connected APR MCP tools directly in this chat. Record only the goal, criteria and a short delivered result for an ordinary review. Use the existing harness, empty lists for unrecorded components and “unknown” for an unknown version. No terminal commands, CLI observer, background watcher, transcript reads or second Codex session are needed. File observations are a separate explicit opt-in.
+
+If work is already underway when the user opts in, set `baseline_missing: true` and use the original request visible in this chat. If the result is already available, start and finish in the same turn. Reuse the task ID you received for follow-ups to that job. Never select a task by “most recent” across chats. Use a fresh, collision-resistant request ID for each job, retained for exact retries.
+
 ## Start before working
 
-When APR recording is enabled, read `get_setup` once for the saved recording-mode preference, then call `start_task` within the normal turn, before substantive work. Setup preferences do not prove runtime installation or capabilities. Supply a stable `request_id`, title, category (`coding`, `writing`, `research`, or `other`), goal, success criteria, runtime/model when known, and the harness mode, name, version, roles, loops, rules, tools, and context categories actually available. Keep the returned `task_id` and `task_url` for subsequent turns. A retry uses the same request ID and identical payload.
+If the recording mode is unclear, read `get_setup` once. Call `start_task` within the normal turn, before substantive work. Setup preferences do not prove runtime installation or capabilities. Supply a stable `request_id`, title, category (`coding`, `writing`, `research`, or `other`), goal, success criteria, runtime/model when known, and the harness mode, name, version, roles, loops, rules, tools, and context categories actually available. Keep the returned `task_id` and `task_url` for subsequent turns. A retry uses the same request ID and identical payload.
 
 Record the user's stated criteria faithfully. Set `baseline_source` to `user-stated` only when the goal and criteria faithfully reflect explicit user requirements; otherwise use `agent-reported`. Label additional inferred criteria in the evidence; do not present them as user-stated. Unknown model/version/resource values stay unknown. Record explicit `parent_task_id` for delegated work, without guessing relationships from directories or recent activity.
 
@@ -27,9 +35,7 @@ Skill summaries are `agent-reported`. Only use `runtime-observed` for evidence a
 
 When delivering the result, call `finish_task` with the task ID, a stable event ID, result, and available verification details as an object. If interrupted, mark it interrupted. Finishing records the agent's delivery; it does not supply a human review or positive outcome. Continue useful work if APR is temporarily unavailable, and disclose the recording gap without inventing a successful receipt.
 
-End each authorized turn with the same returned task link:
-
-`[⭐ Review this task](RETURNED_TASK_URL)`
+After `finish_task` succeeds, include one APR link with the delivered result: `[⭐ Rate this task](REVIEW_URL)`. Use the `review_url` returned by `start_task`. An already-open bridge may return only `task_url`: for its local `/app/#task=<task_id>` link, change just the fragment to `#review=<same task_id>`. Preserve the returned host, port and task ID. Do not guess a port or link. Keep the link for this task across turns; there is no need for a footer on progress messages.
 
 Do not create an extra model continuation just to record or print the link. Modest MCP calls within normal turns are permitted. Runtime hooks remain optional and their coverage must be stated separately.
 
