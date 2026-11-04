@@ -137,6 +137,12 @@ TOOLS = [
             "required": ["task_id"], "properties": {"task_id": {"type": "string"}}},
     },
     {
+        "name": "inspect_context",
+        "description": "Inspect one local task's intent, selected sources, observed Codex reads, coverage gaps, delivery and human review. Read only; does not enable capture.",
+        "inputSchema": {"type": "object", "additionalProperties": False,
+                        "required": ["task_id"], "properties": {"task_id": {"type": "string"}}},
+    },
+    {
         "name": "list_tasks",
         "description": "List local tasks, optionally filtered by lifecycle status.",
         "inputSchema": {"type": "object", "additionalProperties": False,
@@ -232,6 +238,10 @@ def get_task(args):
     return service_call("get_task", args)
 
 
+def inspect_context(args):
+    return service_call("inspect_context", args)
+
+
 def list_tasks(args):
     return service_call("list_tasks", args)
 
@@ -248,7 +258,8 @@ HANDLERS = {"request_rating": request_rating, "record_review": record_review,
             "review_summary": review_summary, "start_task": start_task,
             "append_evidence": append_evidence, "finish_task": finish_task,
             "get_task": get_task, "list_tasks": list_tasks,
-            "prepare_share": prepare_share, "get_setup": get_setup}
+            "prepare_share": prepare_share, "get_setup": get_setup,
+            "inspect_context": inspect_context}
 
 
 def handle(method, params):

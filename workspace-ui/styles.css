@@ -6,3 +6,26 @@
 .setup-command{display:block;margin-top:8px;padding:8px;background:var(--card);border:1px solid var(--line);border-radius:3px;font-size:.72rem;overflow-wrap:anywhere}.text-button{display:inline-block}.resource-reading .source-tag{font-weight:700}
 .rating-control:has(.clear-rating){grid-template-columns:minmax(100px,1fr) auto auto}.rating-control:has(.clear-rating) .clear-rating{white-space:nowrap}@media(max-width:420px){.rating-control:has(.clear-rating){grid-template-columns:1fr}.rating-control:has(.clear-rating) .clear-rating{justify-self:start}}
 @media(max-width:420px){.site-header{height:auto;min-height:66px;flex-wrap:wrap;row-gap:4px;padding:10px 14px}.brand{min-width:0;max-width:100%;flex-wrap:wrap;overflow-wrap:anywhere}.brand>span:first-child{min-width:0;overflow-wrap:anywhere}.top-nav{height:auto;min-width:0;flex:1 1 auto;justify-content:flex-end;gap:13px}.top-nav a{height:auto;padding:8px 0;white-space:nowrap}}
+
+.inspector-link { margin-block: 12px; justify-self: start; }
+.inspector-heading { margin: 20px 0 26px; }
+.inspector-layout { overflow-wrap: anywhere; }
+@media (min-width: 761px) {
+  .inspector-layout > aside { grid-area: 1 / 2; }
+  .inspector-layout > div { grid-area: 1 / 1; }
+}
+.inspector-group + .inspector-group { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 18px; }
+.inspector-group h3, .inspector-group h4 { margin: 0 0 4px; }
+.inspector-group h4 { font-size: .82rem; }
+.inspector-group p { margin: 4px 0 10px; }
+.inspector-files { padding: 0; margin: 8px 0 14px; list-style: none; }
+.inspector-files li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 7px 0; }
+.inspector-files li + li { border-top: 1px solid var(--line); }
+.inspector-files code { font-size: .82rem; }
+.inspector-files details { grid-column: 1 / -1; color: var(--muted); font-size: .74rem; }
+.inspector-files summary { width: fit-content; cursor: pointer; }
+.inspector-files details code { display: block; margin-top: 4px; }
+.inspector-fields { margin: 0; }
+.inspector-fields dt { font-size: .75rem; font-weight: 650; }
+.inspector-fields dd { margin: 0 0 6px; }
+.inspector-fields .inspector-fields { margin-left: 12px; }

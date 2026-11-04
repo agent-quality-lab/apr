@@ -131,7 +131,21 @@ class TaskStore:
     def append_evidence(self, task_id, event_id, kind, source, data):
         _validate_task_id(task_id)
         event = validate_evidence(event_id, kind, source, data)
-        payload = _dumps({**event, "operation": "append_evidence"})
+        return self._append_event(task_id, event, "append_evidence")
+
+    def append_inspector(self, task_id, event_id, data):
+        """Local collector entry only; never accept this evidence kind from MCP."""
+        from inspector_schema import inspector_event_id
+        _validate_task_id(task_id)
+        if inspector_event_id(data) != event_id:
+            raise ValidationError("invalid inspector receipt ID")
+        event = {"event_id": event_id, "kind": "inspector",
+                 "source": "runtime-observed", "data": data}
+        return self._append_event(task_id, event, "inspector")
+
+    def _append_event(self, task_id, event, operation):
+        event_id, kind, source, data = (event[k] for k in ("event_id", "kind", "source", "data"))
+        payload = _dumps({**event, "operation": operation})
         def run():
             task = self._load(task_id)
             if task is None:
@@ -139,9 +153,12 @@ class TaskStore:
             existing = self.db.execute("SELECT payload_json FROM task_events WHERE task_id=? AND event_id=?",
                                        (task_id, event_id)).fetchone()
             if existing:
-                _check_event_replay(existing[0], event, "append_evidence", task)
+                _check_event_replay(existing[0], event, operation, task)
                 return {"task_id": task_id, "event_id": event_id,
                         "status": "already_recorded", "revision": task["revision"]}
+            if operation == "inspector" and data["type"] == "turn":
+                from inspector_schema import validate_turn_binding
+                validate_turn_binding(data, task["evidence"] + task["post_review_evidence"])
             now = _now()
             self.db.execute("INSERT INTO task_events VALUES(?,?,?,?,?,?)",
                             (task_id, event_id, kind, source, payload, now))

@@ -11,6 +11,7 @@ Public source for the local runtime integrations and review flow. The code is ex
 - `task_schema.py` — validation for task baselines, evidence, human reviews, and share previews.
 - `rating-popup/` — local rating form served by the service.
 - `workspace-ui/` — local task history, evidence, human review, and share-preview interface served by the service.
+- [Codex context inspector](docs/operators/codex-context-inspector.md) — opt-in, per-task file inventory and read receipts in the local workspace and `inspect_context` MCP tool.
 - `codex_capture.py` — opt-in command hook collector and exact captured-review URL listing.
 - `hooks.codex.example.json` — disabled-by-default example; it is not installed or auto-loaded.
 - `skill/agent-performance-review/` — Codex skill source.

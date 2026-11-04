@@ -791,10 +791,14 @@ class ServiceHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(200, self.server.store.tasks.finish_task(
                     args.get("task_id"), args.get("event_id"), args.get("result"),
                     args.get("interrupted", False), args.get("verification")))
-            elif name == "get_task":
+            elif name in {"get_task", "inspect_context"}:
+                check_keys(args, "arguments", ["task_id"], ["task_id"])
                 task = self.server.store.tasks.get_task(args.get("task_id"))
                 if task is None:
                     raise ValidationError("task not found")
+                if name == "inspect_context":
+                    from inspector_schema import task_inspection
+                    task = task_inspection(task)
                 self.send_json(200, task)
             elif name == "list_tasks":
                 self.send_json(200, {"tasks": self.server.store.tasks.list_tasks(args.get("status"))})

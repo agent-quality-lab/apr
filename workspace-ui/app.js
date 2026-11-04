@@ -26,6 +26,18 @@
     ['incomplete', 'Incomplete result'], ['missed_brief', 'Missed the brief'],
     ['incorrect', 'Incorrect result'], ['missing_tool', 'Missing tool or capability']
   ];
+  const CAPTURE_GAPS = {
+    unsupported_tool: 'A tool ran whose file reads the recorder cannot verify.',
+    unsupported_command: 'A shell command used a form other than a plain, single-file cat.',
+    unselected_path: 'A command requested a file outside the selected inventory.',
+    missing_cwd: 'The event omitted the working directory needed to resolve a relative file path.',
+    command_failed: 'The file-reading command did not complete successfully.',
+    content_mismatch: 'The captured output did not match the full selected file at inventory time.',
+    invalid_event: 'The recorder could not interpret an event in this turn.',
+    oversize_event: 'An event exceeded the recorder’s size limit and was skipped.',
+    incomplete_stream: 'The event stream had an error or lacked a required start or finish.',
+    turn_failed: 'Codex marked this turn as failed.'
+  };
   const OPTIONAL_RATINGS = [
     ['quality', 'Quality', 'How good was the result?'],
     ['speed', 'Speed', 'How quickly was it completed?'],
@@ -73,6 +85,7 @@
     const [key, ...rest] = raw.split('=');
     const id = rest.join('=');
     if (key === 'task' && id) return { type: 'task', id };
+    if (key === 'inspector' && id) return { type: 'inspector', id };
     if (key === 'review' && id) return { type: 'review', id };
     if (key === 'share' && id) return { type: 'share', id };
     return { type: 'work' };
@@ -329,13 +342,15 @@
     }
   }
 
-  async function loadTask(id) {
+  async function loadTask(id, inspect = false) {
     const serial = ++requestSerial; loading('Loading task details…'); navState('work');
     try {
       const task = await request(`/tasks/${encodeURIComponent(id)}`); if (serial !== requestSerial) return;
       if (!task || typeof task !== 'object') throw new Error('The service returned an invalid task.');
-      state.current = task; renderTask(task);
-    } catch (error) { if (serial !== requestSerial) return; app.replaceChildren(renderError(error.message, () => loadTask(id))); }
+      state.current = task;
+      if (inspect) renderInspector(task);
+      else renderTask(task);
+    } catch (error) { if (serial !== requestSerial) return; app.replaceChildren(renderError(error.message, () => loadTask(id, inspect))); }
   }
   function renderTask(task) {
     app.replaceChildren();
@@ -380,6 +395,7 @@
     side.append(section('Review status', (() => { const body = node('div'); add(body, node('p', '', `Updated ${formatDate(task.updated_at)}`));
       if (task.review) add(body, node('p', 'small muted', `Saved ${formatDate(task.review.recorded_at)} · Completion ${task.review.completion === 'yes' ? 'yes' : task.review.completion === 'no' ? 'no' : 'not recorded'}`));
       else add(body, node('p', 'small muted', 'Your review has not been saved yet.')); return body; })()));
+    side.append(inspectorLink(task));
     if (task.status === 'reviewed' && task.review) side.append(button('Prepare a share snapshot', () => {
       state.share = null; state.selected = new Set(); state.redactions = {};
       location.hash = `share=${encodeURIComponent(String(task.task_id))}`;
@@ -395,9 +411,143 @@
       const card = node('article', 'evidence-item'); const header = node('div', 'preview-toolbar');
       add(header, badge(safeText(item.kind || 'evidence'))); header.append(sourceBadge(item.source));
       if (item.event_id) add(header, node('span', 'small muted', `Event ${safeText(item.event_id)}`)); card.append(header);
+      if (item.kind === 'inspector') {
+        card.append(inspectorLink(state.current)); list.append(card); return;
+      }
       const d = node('details'); add(d, node('summary', '', 'Show recorded details'));
       const pre = node('p'); pre.textContent = safeText(item.data); d.append(pre); card.append(d); list.append(card);
     }); parent.append(list);
+  }
+
+  function inspectorLink(task) {
+    return linkButton('Open context inspector', `#inspector=${encodeURIComponent(task.task_id)}`, 'button secondary inspector-link');
+  }
+
+  function recordValue(value) {
+    if (Array.isArray(value)) {
+      const list = node('ul', 'criteria');
+      value.forEach(item => add(list, node('li')).append(recordValue(item)));
+      return value.length ? list : node('span', 'muted', 'None recorded');
+    }
+    if (value && typeof value === 'object') {
+      const fields = node('dl', 'inspector-fields');
+      Object.entries(value).forEach(([key, item]) => {
+        add(fields, node('dt', '', key.replaceAll('_', ' ')));
+        add(fields, node('dd')).append(recordValue(item));
+      });
+      return fields.childElementCount ? fields : node('span', 'muted', 'None recorded');
+    }
+    return node('span', '', safeText(value));
+  }
+
+  function fileList(files, empty) {
+    if (!files.length) return node('p', 'small muted', empty);
+    const list = node('ul', 'inspector-files');
+    files.forEach(file => {
+      const row = add(list, node('li'));
+      add(row, node('code', '', file.path));
+      add(row, node('span', 'small muted', `${formatNumber(file.bytes)} bytes`));
+      const hash = add(row, node('details'));
+      add(hash, node('summary', '', 'SHA-256')); add(hash, node('code', '', file.sha256));
+    });
+    return list;
+  }
+
+  function inspectorEvidence(events, context = {}, afterReview = false) {
+    const groups = node('div', 'inspector-evidence');
+    const inventory = node('div'); const turns = node('div'); const gaps = node('div'); const reports = node('div');
+    const observed = events.filter(event => event?.kind === 'inspector' && event.source === 'runtime-observed');
+    observed.forEach(({ data, created_at }) => {
+      if (data?.type === 'inventory' && Array.isArray(data.items)) {
+        if (created_at) add(inventory, node('p', 'small muted', formatDate(created_at)));
+        inventory.append(fileList(data.items, 'The recorded inventory was empty.'));
+      }
+      if (data?.type === 'turn' && Number.isInteger(data.turn) && data.turn > 0 && Array.isArray(data.reads)) {
+        add(turns, node('h4', '', `Turn ${data.turn}`));
+        turns.append(fileList(data.reads, 'No file reads were observed for this turn.'));
+        if (Array.isArray(data.gaps) && data.gaps.length) {
+          add(gaps, node('h4', '', `Turn ${data.turn}`));
+          gaps.append(recordValue(data.gaps.map(code => CAPTURE_GAPS[code] || code)));
+        }
+      }
+    });
+    if (!afterReview && !inventory.childElementCount) add(gaps, node('p', '', 'No context inventory was captured.'));
+    if (!afterReview && !turns.childElementCount) add(gaps, node('p', '', 'No per-turn observation was captured.'));
+    const report = (label, source, data) => {
+      const entry = add(reports, node('details', 'details-group'));
+      const summary = add(entry, node('summary', '', label + ' '));
+      summary.append(badge(`Declared source · ${SOURCE_LABELS[source] || 'Unknown'}`));
+      add(entry, node('div', 'details-body')).append(recordValue(data));
+    };
+    Object.entries(context || {}).forEach(([source, data]) => report('Starting context', source, data));
+    events.filter(event => event?.kind === 'context' || (event?.source === 'agent-reported' && event.kind !== 'inspector'))
+      .forEach(event => report(event.kind[0].toUpperCase() + event.kind.slice(1), event.source, event.data));
+    [
+      ['Context inventory', 'Files selected for observation at the start of capture.', inventory, afterReview ? 'No new inventory after review.' : 'Inventory unavailable.'],
+      ['Observed reads by turn', 'A read appears only when a plain cat command returns a complete file matching the selected inventory. A file without a recorded read may still have been used. The effect of a recorded read on the result is unknown.', turns, 'No observed turns.'],
+      ['Coverage gaps', '', gaps, 'No gaps reported for the captured turns.'],
+      ['Agent reports and declared context', 'Source labels describe who supplied each record. File-read observations appear above.', reports, 'No reports recorded.']
+    ].forEach(([heading, description, body, empty]) => {
+      const group = add(groups, node('section', 'inspector-group'));
+      add(group, node('h3', '', heading));
+      if (description) add(group, node('p', 'muted small', description));
+      if (!body.childElementCount) add(body, node('p', 'muted small', empty));
+      group.append(body);
+    });
+    return groups;
+  }
+
+  function renderInspector(task) {
+    const events = Array.isArray(task.evidence) ? task.evidence : [];
+    const later = Array.isArray(task.post_review_evidence) ? task.post_review_evidence : [];
+    const taskUrl = `#task=${encodeURIComponent(task.task_id)}`;
+    app.replaceChildren(linkButton('Back to task record', taskUrl, 'text-button'));
+    const hero = add(app, node('header', 'inspector-heading'));
+    add(hero, node('p', 'eyebrow', 'Local context inspector'));
+    const title = add(hero, node('h1', '', task.title)); title.tabIndex = -1;
+    const layout = add(app, node('div', 'split inspector-layout'));
+    const side = add(layout, node('aside')); const main = add(layout, node('div'));
+    main.append(section(task.review ? 'Evidence at review' : 'Run evidence', inspectorEvidence(events, task.context)));
+    if (later.length) {
+      const body = node('div');
+      add(body, node('p', 'small muted', `${later.length} evidence ${later.length === 1 ? 'record arrived' : 'records arrived'} after the human rating was saved. The rating covers the earlier evidence only.`));
+      body.append(inspectorEvidence(later, {}, true)); main.append(section('After the saved review', body));
+    }
+    const brief = node('div');
+    add(brief, node('p', 'small muted', `Baseline source · ${SOURCE_LABELS[task.baseline_source] || 'Not recorded'}`));
+    [['Original goal', task.baseline_missing ? 'Baseline unavailable' : task.goal],
+     ['Original success criteria', task.success_criteria], ['Recorded result', task.result]].forEach(([label, value]) => {
+      const block = add(brief, node('div', 'content-block')); add(block, node('h3', '', label));
+      block.append(recordValue(value));
+    });
+    side.append(section('Task brief', brief));
+    const review = node('div');
+    if (task.review) {
+      add(review, node('p', '', `Saved ${formatDate(task.review.recorded_at)}`));
+      const completion = task.review.completion === 'yes' ? 'Yes'
+        : task.review.completion === 'no' ? 'No' : 'Not recorded';
+      add(review, node('p', '', `Completion · ${completion}`));
+      const scores = node('dl', 'inspector-fields');
+      [['overall', 'Overall'], ...OPTIONAL_RATINGS].forEach(([key, label]) => {
+        const score = task.review.ratings?.[key];
+        if (Number.isInteger(score)) {
+          add(scores, node('dt', '', label)); add(scores, node('dd', '', `${score} / 5`));
+        }
+      });
+      review.append(scores);
+      if (task.review.gap_reasons?.length) {
+        add(review, node('h3', '', 'Reported reasons'));
+        review.append(recordValue(task.review.gap_reasons.map(reason => GAP_REASONS.find(([key]) => key === reason)?.[1] || reason)));
+      }
+      const count = task.reviewed_evidence_count ?? events.length;
+      add(review, node('p', 'small muted', `Frozen at ${count} evidence ${count === 1 ? 'record' : 'records'}.`));
+    } else {
+      add(review, node('p', '', 'Human review pending.'));
+      if (['awaiting_review', 'interrupted'].includes(task.status)) {
+        review.append(linkButton('Review this task', `#review=${encodeURIComponent(task.task_id)}`));
+      }
+    }
+    side.append(section('Human review', review)); setFocus('h1');
   }
 
   function ratingControl(key, label, hint, initial, required) {
@@ -455,6 +605,7 @@
     add(copy, node('p', 'lede', text)); hero.append(copy); app.append(hero);
     if (task && typeof task === 'object') app.append(renderPerformance(task));
     const actions = node('div', 'review-actions');
+    if (task?.task_id) actions.append(inspectorLink(task));
     actions.append(button('Open task record', () => { location.hash = `task=${encodeURIComponent(String(task?.task_id || ''))}`; }, 'button'));
     if (task?.status === 'reviewed') actions.append(button('Prepare a share snapshot', () => { location.hash = `share=${encodeURIComponent(String(task.task_id))}`; }, 'button secondary'));
     app.append(actions); setFocus('h1');
@@ -485,6 +636,7 @@
     add(copy, node('h1', '', safeText(task.title || 'Untitled task'))); add(copy, node('p', 'lede', 'Compare the result with the goal and criteria. Use your judgment for ratings; resource readings are shown separately.')); hero.append(copy); app.append(hero);
     const reviewContext = node('div', 'review-context');
     reviewContext.append(renderBeforeAfter(task), renderTaskBrief(task), renderPerformance(task)); app.append(reviewContext);
+    reviewContext.append(inspectorLink(task));
     if (message) { const notice = node('div', 'error', message); notice.setAttribute('role', 'alert'); app.append(notice); }
     const form = node('form', 'panel'); form.id = 'review-form'; form.addEventListener('submit', saveReview);
     add(form, node('h2', '', 'Did the task reach its goal?'));
@@ -734,6 +886,7 @@
     if (route.type === 'work') return loadWork();
     if (route.type === 'setup') return loadSetup();
     if (route.type === 'task') return loadTask(route.id);
+    if (route.type === 'inspector') return loadTask(route.id, true);
     if (route.type === 'review') return loadReview(route.id);
     if (route.type === 'share') return loadShare(route.id);
   }
