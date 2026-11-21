@@ -29,6 +29,8 @@ The Codex review hooks were removed from the active user configuration. This sou
 
 The local flow keeps task logs on the user's computer. The task lifecycle may preserve authorized task briefs, instructions, definitions, selected context, work logs, results, and artifacts, with source labels and coverage gaps. Credentials are excluded. The older optional Codex hook collector still captures content-free receipts only; it does not measure token use or cost. No capture path claims access to hidden reasoning.
 
+When an opted-in desktop review includes exact Codex thread and turn IDs, the local service can read the corresponding local session file to derive completed-turn token, tool-call, and elapsed-time counters. It saves available counters with the review; it does not calculate billing or memory use. The format is Codex-specific and may change.
+
 The task-recording interface adds a separate lifecycle: `start_task` records the caller-supplied baseline, `append_evidence` adds source-labeled events, `finish_task` records the result without inventing a human rating, and the local workspace collects a review. Reusing a task request or evidence event is idempotent only when the original content is unchanged. Legacy reviews are imported into the task view with a missing baseline clearly marked. `prepare_share` creates a frozen preview from explicitly selected fields; it does not publish or upload anything.
 
 <a id="local-mcp-setup"></a>

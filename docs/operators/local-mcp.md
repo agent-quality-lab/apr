@@ -213,7 +213,7 @@ Nothing here edits Codex files by hand or enables hooks.
    `append_evidence`, `finish_task`, `get_task`, `list_tasks`,
    `prepare_share`, plus the legacy `request_rating`); the agent calls
    `get_setup` and `start_task` before answering, `finish_task` when it
-   delivers the criteria, and ends with `[⭐ Review this task](http://127.0.0.1:PORT/app/...)`.
+   delivers the criteria, and ends with `[⭐ Rate this task](http://127.0.0.1:PORT/app/...)`.
    The first tool call starts the local service automatically.
 6. Open the link, submit your own outcome and overall stars, and check that the
    task appears in your private history. Saving freezes the reviewed snapshot,

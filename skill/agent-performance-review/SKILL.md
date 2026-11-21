@@ -15,7 +15,7 @@ APR records a job aimed at a result. A single automation or a conversation spann
 
 Treat “review this task” as opt-in for the current job only. A quoted example, a question about APR, or an ordinary request for code review does not enable it. If the chat has no identifiable task, ask what result the user wants reviewed before creating a record. A new job needs its own opt-in.
 
-Use the connected APR MCP tools directly in this chat. Record only the goal, criteria and a short delivered result for an ordinary review. Use the existing harness, empty lists for unrecorded components and “unknown” for an unknown version. No terminal commands, CLI observer, background watcher, transcript reads or second Codex session are needed. File observations are a separate explicit opt-in.
+Use the connected APR MCP tools directly in this chat. Record only the goal, criteria and a short delivered result for an ordinary review. Use the existing harness, empty lists for unrecorded components and “unknown” for an unknown version. No terminal commands, CLI observer, background watcher or second Codex session are needed. File observations are a separate explicit opt-in. When selected desktop resource scope is supplied, the local service reads the corresponding session file for numeric counters as described below.
 
 If work is already underway when the user opts in, set `baseline_missing: true` and use the original request visible in this chat. If the result is already available, start and finish in the same turn. Reuse the task ID you received for follow-ups to that job. Never select a task by “most recent” across chats. Use a fresh, collision-resistant request ID for each job, retained for exact retries.
 
