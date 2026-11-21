@@ -193,16 +193,23 @@
   }
   function renderResourceSection(task) {
     const body = node('div', 'resource-list');
-    [['elapsed_time', 'Elapsed time'], ['cost', 'Cost'], ['tokens', 'Tokens'], ['tool_calls', 'Tool calls']].forEach(([key, label]) => {
+    const desktop = Object.keys(task?.resources || {}).some(id =>
+      id === 'codex-selected-turns' || id.startsWith('codex-turn-metrics.'));
+    const metrics = [['elapsed_time', 'Elapsed time'], ['cost', 'Cost'], ['tokens', 'Tokens'], ['tool_calls', 'Tool calls']];
+    if (desktop) metrics.push(['input_tokens', 'Input tokens'], ['cached_input_tokens', 'Cached input tokens'], ['output_tokens', 'Output tokens']);
+    metrics.forEach(([key, label]) => {
       const row = node('div', 'resource-row'); add(row, node('strong', '', label));
       const readings = resourceRecords(task, key);
       const values = node('div', 'resource-readings');
-      if (!readings.length) add(values, node('span', 'muted small', 'Not measured'));
+      const gap = desktop && key === 'cost' ? 'No billed amount in Codex usage data' : 'Not measured';
+      if (!readings.length) add(values, node('span', 'muted small', gap));
       readings.forEach(reading => {
         const item = node('div', 'resource-reading'); add(item, node('span', '', reading.value)); item.append(sourceBadge(reading.source)); values.append(item);
       });
       row.append(values); body.append(row);
     });
+    if (desktop) add(body, node('p', 'muted small', 'Codex counts input and output across model requests in the selected work turns. Cached input is part of input. Time is the sum of turn durations. Tool calls count top-level model function and custom tool calls, including review calls made during those turns.'));
+    else if (task?.verification?.codex_resource_scope) add(body, node('p', 'muted small', 'Codex usage becomes available after the selected turns finish. Refresh to check for local usage records.'));
     return body;
   }
   function renderPerformance(task) {
@@ -508,6 +515,7 @@
     const layout = add(app, node('div', 'split inspector-layout'));
     const side = add(layout, node('aside')); const main = add(layout, node('div'));
     main.append(section(task.review ? 'Evidence at review' : 'Run evidence', inspectorEvidence(events, task.context)));
+    main.append(section('Recorded resources', renderResourceSection(task)));
     if (later.length) {
       const body = node('div');
       add(body, node('p', 'small muted', `${later.length} evidence ${later.length === 1 ? 'record arrived' : 'records arrived'} after the human rating was saved. The rating covers the earlier evidence only.`));

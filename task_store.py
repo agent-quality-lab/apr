@@ -225,7 +225,23 @@ class TaskStore:
         _validate_task_id(task_id)
         with self.store._lock:
             task = self._load(task_id)
-            return self._result(task) if task else None
+        if task:
+            self._include_desktop_resources(task)
+            return self._result(task)
+        return None
+
+    @staticmethod
+    def _include_desktop_resources(task):
+        # A finish receipt usually arrives before Codex finalizes the turn.
+        # Project completed counters on detail reads and freeze them at rating time.
+        verification = task.get("verification") or {}
+        scope = verification.get("codex_resource_scope")
+        if not scope or task.get("review") is not None:
+            return
+        from desktop_resources import selected_turn_metrics
+        metrics = selected_turn_metrics(scope)
+        if metrics:
+            task["resources"]["codex-selected-turns"] = {**metrics, "source": "imported"}
 
     def list_tasks(self, status=None):
         if status is not None and (not isinstance(status, str) or status not in {
@@ -254,6 +270,7 @@ class TaskStore:
                 raise ValidationError("human review is already saved and cannot be overwritten")
             now = _now()
             review = {**data, "recorded_at": now}
+            self._include_desktop_resources(task)
             task["reviewed_evidence_count"] = len(task["evidence"])
             self.db.execute("INSERT INTO task_reviews VALUES(?,?,?)", (task_id, _dumps(review), now))
             task["review"] = review

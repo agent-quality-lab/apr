@@ -70,7 +70,7 @@ def task_inspection(task):
     return {
         **{k: task.get(k) for k in ("task_id", "title", "goal", "success_criteria",
                                     "baseline_source", "baseline_missing", "context",
-                                    "result", "status", "review", "revision")},
+                                    "result", "status", "review", "resources", "revision")},
         "capture": evidence_group(task["evidence"]),
         "after_review": evidence_group(task["post_review_evidence"]),
         "coverage": "Selected inventory and matching plain cat output only. Missing receipts do not establish non-use; delivery does not establish influence.",
